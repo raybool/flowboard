@@ -1,0 +1,30 @@
+{
+  "name": "flowboard",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "private": true,
+  "scripts": {
+    "dev": "pnpm -r --parallel --filter './apps/*' run dev",
+    "dev:api": "pnpm --filter ./apps/api start:dev",
+    "dev:web": "pnpm --filter ./apps/web dev",
+    "build": "pnpm -r --filter ./apps/* build",
+    "db:up": "docker compose up -d",
+    "db:down": "docker compose down",
+    "db:logs": "docker compose logs -f postgres",
+    "db:psql": "docker compose exec postgres psql -U flowboard -d flowboard",
+    "db:status": "docker compose ps"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devEngines": {
+    "packageManager": {
+      "name": "pnpm",
+      "version": "12.11.2",
+      "onFail": "download"
+    }
+  },
+  "packageManager": "pnpm@12.11.2",
+  "type": "module"
+}

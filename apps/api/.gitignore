@@ -1,0 +1,10 @@
+/api
+/.env
+/.idea/
+/.cache/
+/coverage*
+
+/src/generated/prisma
+
+node_modules
+dist
