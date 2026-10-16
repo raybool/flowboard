@@ -7,11 +7,13 @@
   "license": "UNLICENSED",
   "type": "module",
   "scripts": {
+    "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:deploy": "prisma migrate deploy",
     "db:studio": "prisma studio",
     "db:validate": "prisma validate",
     "dev": "nest start --watch",
+    "prebuild": "pnpm db:generate",
     "build": "nest build",
     "deploy": "nest deploy",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",

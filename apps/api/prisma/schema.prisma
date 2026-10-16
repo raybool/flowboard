@@ -19,6 +19,7 @@ model User {
   passwordHash String    @map("password_hash")
 
   sessions     Session[]
+  workspaceMemberships WorkspaceMember[]
 
   createdAt    DateTime  @default(now()) @map("created_at")
   updatedAt    DateTime  @updatedAt @map("updated_at")
@@ -39,4 +40,40 @@ model Session {
 
   @@index([userId])
   @@map("sessions")
+}
+
+enum WorkspaceRole {
+  OWNER
+  ADMIN
+  MEMBER
+}
+
+model Workspace {
+  id        String   @id @default(uuid())
+  name      String
+  slug      String   @unique
+
+  members   WorkspaceMember[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("workspaces")
+}
+
+model WorkspaceMember {
+  id          String        @id @default(uuid())
+  workspaceId String
+  userId      String
+  role        WorkspaceRole @default(MEMBER)
+
+  workspace Workspace @relation( fields: [workspaceId], references: [id], onDelete: Cascade )
+
+  user User @relation( fields: [userId], references: [id], onDelete: Cascade )
+
+  joinedAt DateTime @default(now())
+
+  @@unique([workspaceId, userId])
+  @@index([userId])
+  @@map("workspace_members")
 }

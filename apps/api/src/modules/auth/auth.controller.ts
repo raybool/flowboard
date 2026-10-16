@@ -6,7 +6,6 @@ import {
   HttpStatus,
   Post,
   Res,
-  UseGuards,
   UnauthorizedException,
 } from '@nestjs/common';
 import { HttpAdapterHost } from '@nestjs/core';
@@ -20,8 +19,8 @@ import {
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
-import { AccessTokenGuard } from './guards/access-token.guard';
 import { CurrentUser } from './decorators/current-user.decorator';
+import { Public } from './decorators/public.decorator';
 import type { AuthUser } from './types/auth.types';
 
 const COOKIE_NAME = 'flowboard_refresh';
@@ -67,6 +66,7 @@ export class AuthController {
   }
 
   @Post('register')
+  @Public()
   @ApiOperation({ summary: 'Register user' })
   async register(
     @Body() dto: RegisterDto,
@@ -83,6 +83,7 @@ export class AuthController {
   }
 
   @Post('login')
+  @Public()
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Login user' })
   async login(
@@ -100,6 +101,7 @@ export class AuthController {
   }
 
   @Post('refresh')
+  @Public()
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Refresh session' })
   async refresh(
@@ -125,6 +127,7 @@ export class AuthController {
   }
 
   @Post('logout')
+  @Public()
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({ summary: 'Logout' })
   async logout(
@@ -139,7 +142,6 @@ export class AuthController {
   }
 
   @Get('me')
-  @UseGuards(AccessTokenGuard)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Current user' })
   getMe(@CurrentUser() user: AuthUser): AuthUser {

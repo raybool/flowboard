@@ -49,7 +49,7 @@ async function bootstrap() {
 
   await app.listen(port);
 
-  Logger.log(`API: http://localhost:${port}/api/v1`);
+  Logger.log(`API: http://localhost:${port}/api`);
   Logger.log(`Swagger: http://localhost:${port}/api/docs`);
 
 }

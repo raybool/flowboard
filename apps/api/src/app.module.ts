@@ -1,10 +1,9 @@
 import { Module } from '@nestjs/common';
-import { AppController } from './app.controller';
-import { AppService } from './app.service';
 import { ConfigModule } from '@nestjs/config';
 import { DatabaseModule } from './database/database.module';
 import { envSchema } from './config/env.schema';
 import { AuthModule } from './modules/auth/auth.module';
+import { WorkspacesModule } from './modules/workspaces/workspaces.module.js';
 
 @Module({
   imports: [
@@ -16,9 +15,8 @@ import { AuthModule } from './modules/auth/auth.module';
 
     DatabaseModule,
     AuthModule,
+    WorkspacesModule,
   ],
-  controllers: [AppController],
-  providers: [AppService],
 })
 export class AppModule {}
 

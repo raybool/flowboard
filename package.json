@@ -5,10 +5,12 @@
   "main": "index.js",
   "private": true,
   "scripts": {
+    "postinstall": "node scripts/ensure-prisma-client.mjs",
     "dev": "pnpm -r --parallel --filter './apps/*' run dev",
     "dev:api": "pnpm --filter ./apps/api start:dev",
     "dev:web": "pnpm --filter ./apps/web dev",
-    "build": "pnpm -r --filter ./apps/* build",
+    "build": "pnpm -r --filter './apps/*' build",
+    "db:generate": "pnpm --filter ./apps/api db:generate",
     "db:up": "docker compose up -d",
     "db:down": "docker compose down",
     "db:logs": "docker compose logs -f postgres",
