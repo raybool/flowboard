@@ -99,6 +99,15 @@ export type AuditToolName =
   | 'context.get_task'
   | 'context.update_task_context';
 
+export type AuditErrorCode =
+  | 'revision_conflict'
+  | 'sensitive_data'
+  | 'unsafe_path'
+  | 'size_limit'
+  | 'invalid_input'
+  | 'not_found'
+  | 'operation_failed';
+
 export interface AuditLogInput {
   occurredAt: string;
   tool: AuditToolName;
@@ -111,6 +120,8 @@ export interface AuditLogInput {
   success: boolean;
   revisionBefore?: number | null;
   revisionAfter?: number | null;
+  retryCount?: number;
+  errorCode?: AuditErrorCode | null;
 }
 
 export interface AuditToolStats {
@@ -121,6 +132,8 @@ export interface AuditToolStats {
   requestBytes: number;
   responseBytes: number;
   averageDurationMs: number;
+  retries: number;
+  errorReasons: Record<AuditErrorCode, number>;
   latestAt: string | null;
 }
 
@@ -132,6 +145,8 @@ export interface AuditStats {
   requestBytes: number;
   responseBytes: number;
   averageDurationMs: number;
+  totalRetries: number;
+  errorReasons: Record<AuditErrorCode, number>;
   latestAt: string | null;
   byTool: Record<AuditToolName, AuditToolStats>;
 }
@@ -251,6 +266,65 @@ const PHONE_PATTERN = /(?:^|\D)(?:\+?\d[\s().-]*){8,}(?:$|\D)/;
 const TASK_CONTEXT_MAX_ITEMS = TASK_CONTEXT_LIMITS.maxItems;
 const TASK_CONTEXT_ITEM_MAX_LENGTH = TASK_CONTEXT_LIMITS.contentItem;
 const TASK_CONTEXT_MAX_BYTES = TASK_CONTEXT_LIMITS.maxBytes;
+const CONTROL_CHARACTER_PATTERN = /[\u0000-\u001f\u007f-\u009f]/u;
+const AUDIT_ERROR_CODES: AuditErrorCode[] = [
+  'revision_conflict',
+  'sensitive_data',
+  'unsafe_path',
+  'size_limit',
+  'invalid_input',
+  'not_found',
+  'operation_failed',
+];
+
+/**
+ * Validate repository-relative paths independently from free-form handoff text.
+ * In particular, `api` is a normal project segment; only sensitive names such
+ * as `api-key` are rejected by the metadata check below.
+ */
+export function assertSafeRelativeRepositoryPath(
+  value: string,
+  field = 'path',
+): string {
+  const normalized = value.trim();
+  if (normalized.length === 0) {
+    throw new Error(`${field} must not be empty.`);
+  }
+  if (normalized.length > TASK_CONTEXT_LIMITS.pathItem) {
+    throw new Error(
+      `${field} must be at most ${TASK_CONTEXT_LIMITS.pathItem} characters.`,
+    );
+  }
+  if (
+    CONTROL_CHARACTER_PATTERN.test(normalized) ||
+    normalized.includes('\\') ||
+    path.isAbsolute(normalized) ||
+    path.win32.isAbsolute(normalized) ||
+    /^[A-Za-z]:/u.test(normalized)
+  ) {
+    throw new Error(`${field} must be a safe repository-relative path.`);
+  }
+  const segments = normalized.split('/');
+  if (
+    segments.some((segment) => segment.length === 0 || segment === '.' || segment === '..') ||
+    path.posix.normalize(normalized) !== normalized
+  ) {
+    throw new Error(`${field} must not contain path traversal or empty segments.`);
+  }
+  if (containsSensitivePathMetadata(normalized)) {
+    throw new Error(`${field} may contain a secret or personal data.`);
+  }
+  return normalized;
+}
+
+export function isSafeRelativeRepositoryPath(value: string): boolean {
+  try {
+    assertSafeRelativeRepositoryPath(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 export function containsSensitiveText(value: string): boolean {
   return (
@@ -382,6 +456,15 @@ function assertTaskContextItems(
     assertTaskContextText(value, field, maxLength, sensitiveCheck),
   );
   return [...new Set(normalized)];
+}
+
+function assertTaskContextPathItems(values: string[], field: string): string[] {
+  if (values.length > TASK_CONTEXT_MAX_ITEMS) {
+    throw new Error(`${field} may contain at most ${TASK_CONTEXT_MAX_ITEMS} items.`);
+  }
+  return [...new Set(values.map((value, index) =>
+    assertSafeRelativeRepositoryPath(value, `${field}[${index}]`),
+  ))];
 }
 
 const RECORD_KIND_SQL =
@@ -618,7 +701,9 @@ export class ContextStore {
         response_bytes INTEGER NOT NULL CHECK (response_bytes >= 0),
         success INTEGER NOT NULL CHECK (success IN (0, 1)),
         revision_before INTEGER,
-        revision_after INTEGER
+        revision_after INTEGER,
+        retry_count INTEGER NOT NULL DEFAULT 0 CHECK (retry_count >= 0),
+        error_code TEXT
       );
 
       CREATE INDEX IF NOT EXISTS context_audit_log_occurred_idx
@@ -692,7 +777,9 @@ export class ContextStore {
       schema?.sql.includes('context.update_task_context') &&
       columnNames.has('request_bytes') &&
       columnNames.has('revision_before') &&
-      columnNames.has('revision_after')
+      columnNames.has('revision_after') &&
+      columnNames.has('retry_count') &&
+      columnNames.has('error_code')
     ) {
       return;
     }
@@ -714,14 +801,17 @@ export class ContextStore {
         response_bytes INTEGER NOT NULL CHECK (response_bytes >= 0),
         success INTEGER NOT NULL CHECK (success IN (0, 1)),
         revision_before INTEGER,
-        revision_after INTEGER
+        revision_after INTEGER,
+        retry_count INTEGER NOT NULL DEFAULT 0 CHECK (retry_count >= 0),
+        error_code TEXT
       );
       INSERT INTO context_audit_log (
         id, occurred_at, tool, task_id, agent_role, request_bytes,
-        duration_ms, result_count, response_bytes, success, revision_before, revision_after
+        duration_ms, result_count, response_bytes, success, revision_before, revision_after,
+        retry_count, error_code
       )
       SELECT id, occurred_at, tool, task_id, agent_role, 0,
-        duration_ms, result_count, response_bytes, success, NULL, NULL
+        duration_ms, result_count, response_bytes, success, NULL, NULL, 0, NULL
       FROM context_audit_log_legacy;
       DROP TABLE context_audit_log_legacy;
       CREATE INDEX context_audit_log_occurred_idx
@@ -1009,12 +1099,7 @@ export class ContextStore {
         objective,
         affectedFiles: input.affectedFiles === undefined
           ? existing?.affectedFiles ?? []
-          : assertTaskContextItems(
-              input.affectedFiles,
-              'affectedFiles',
-              containsSensitivePathMetadata,
-              TASK_CONTEXT_LIMITS.pathItem,
-            ),
+          : assertTaskContextPathItems(input.affectedFiles, 'affectedFiles'),
         architectureDecisions: input.architectureDecisions === undefined
           ? existing?.architectureDecisions ?? []
           : assertTaskContextItems(input.architectureDecisions, 'architectureDecisions'),
@@ -1032,12 +1117,7 @@ export class ContextStore {
           : assertTaskContextItems(input.openIssues, 'openIssues'),
         sourceReferences: input.sourceReferences === undefined
           ? existing?.sourceReferences ?? []
-          : assertTaskContextItems(
-              input.sourceReferences,
-              'sourceReferences',
-              containsSensitivePathMetadata,
-              TASK_CONTEXT_LIMITS.pathItem,
-            ),
+          : assertTaskContextPathItems(input.sourceReferences, 'sourceReferences'),
       } satisfies Omit<TaskContext, 'createdAt' | 'updatedAt' | 'revision'>;
       if (Buffer.byteLength(JSON.stringify(context), 'utf8') > TASK_CONTEXT_MAX_BYTES) {
         throw new Error(
@@ -1423,6 +1503,43 @@ export class ContextStore {
     }));
   }
 
+  sourceReferencesForPaths(paths: readonly string[]): StoredSourceReference[] {
+    const uniquePaths = [...new Set(paths)];
+    if (uniquePaths.length === 0) {
+      return [];
+    }
+    const placeholders = uniquePaths.map(() => '?').join(', ');
+    const rows = this.db
+      .prepare(
+        `SELECT id, source_path, source_commit, source_hash
+         FROM context_records
+         WHERE source_path IN (${placeholders})
+           AND status IN ('confirmed', 'proposed')
+         ORDER BY updated_at DESC`,
+      )
+      .all(...uniquePaths) as unknown as Array<{
+      id: string;
+      source_path: string;
+      source_commit: string;
+      source_hash: string;
+    }>;
+    const seen = new Set<string>();
+    return rows
+      .filter((row) => {
+        if (seen.has(row.source_path)) {
+          return false;
+        }
+        seen.add(row.source_path);
+        return true;
+      })
+      .map((row) => ({
+        id: row.id,
+        path: row.source_path,
+        commit: row.source_commit,
+        hash: row.source_hash,
+      }));
+  }
+
   setStaleness(staleness: ReadonlyMap<string, boolean>): number {
     if (staleness.size === 0) {
       return 0;
@@ -1493,14 +1610,16 @@ export class ContextStore {
     const durationMs = Math.max(0, Math.round(input.durationMs));
     const resultCount = Math.max(0, Math.round(input.resultCount));
     const responseBytes = Math.max(0, Math.round(input.responseBytes));
+    const retryCount = Math.max(0, Math.round(input.retryCount ?? 0));
     const taskId = sanitizeAuditContext(input.taskId, 160);
     const agentRole = sanitizeAuditContext(input.agentRole, 80);
     this.db
       .prepare(
         `INSERT INTO context_audit_log (
           occurred_at, tool, task_id, agent_role, request_bytes, duration_ms,
-          result_count, response_bytes, success, revision_before, revision_after
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          result_count, response_bytes, success, revision_before, revision_after,
+          retry_count, error_code
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         input.occurredAt,
@@ -1514,6 +1633,8 @@ export class ContextStore {
         input.success ? 1 : 0,
         input.revisionBefore ?? null,
         input.revisionAfter ?? null,
+        retryCount,
+        input.errorCode ?? null,
       );
   }
 
@@ -1550,6 +1671,7 @@ export class ContextStore {
            COALESCE(SUM(result_count), 0) AS result_count,
            COALESCE(SUM(request_bytes), 0) AS request_bytes,
            COALESCE(SUM(response_bytes), 0) AS response_bytes,
+           COALESCE(SUM(retry_count), 0) AS total_retries,
            COALESCE(AVG(duration_ms), 0) AS average_duration_ms,
            MAX(occurred_at) AS latest_at
          FROM context_audit_log
@@ -1562,6 +1684,7 @@ export class ContextStore {
       result_count: number;
       request_bytes: number;
       response_bytes: number;
+      total_retries: number;
       average_duration_ms: number;
       latest_at: string | null;
     };
@@ -1581,6 +1704,8 @@ export class ContextStore {
         requestBytes: 0,
         responseBytes: 0,
         averageDurationMs: 0,
+        retries: 0,
+        errorReasons: Object.fromEntries(AUDIT_ERROR_CODES.map((code) => [code, 0])) as Record<AuditErrorCode, number>,
         latestAt: null,
       };
     }
@@ -1594,6 +1719,7 @@ export class ContextStore {
            COALESCE(SUM(result_count), 0) AS result_count,
            COALESCE(SUM(request_bytes), 0) AS request_bytes,
            COALESCE(SUM(response_bytes), 0) AS response_bytes,
+           COALESCE(SUM(retry_count), 0) AS retries,
            COALESCE(AVG(duration_ms), 0) AS average_duration_ms,
            MAX(occurred_at) AS latest_at
          FROM context_audit_log
@@ -1608,6 +1734,7 @@ export class ContextStore {
       result_count: number;
       request_bytes: number;
       response_bytes: number;
+      retries: number;
       average_duration_ms: number;
       latest_at: string | null;
     }>;
@@ -1620,8 +1747,31 @@ export class ContextStore {
         requestBytes: Number(row.request_bytes),
         responseBytes: Number(row.response_bytes),
         averageDurationMs: Number(Number(row.average_duration_ms).toFixed(2)),
+        retries: Number(row.retries),
+        errorReasons: Object.fromEntries(AUDIT_ERROR_CODES.map((code) => [code, 0])) as Record<AuditErrorCode, number>,
         latestAt: row.latest_at,
       };
+    }
+    const errorRows = this.db
+      .prepare(
+        `SELECT tool, error_code, COUNT(*) AS count
+         FROM context_audit_log
+         WHERE ${where} AND error_code IS NOT NULL
+         GROUP BY tool, error_code`,
+      )
+      .all(...parameters) as unknown as Array<{
+      tool: AuditToolName;
+      error_code: AuditErrorCode;
+      count: number;
+    }>;
+    const errorReasons = Object.fromEntries(
+      AUDIT_ERROR_CODES.map((code) => [code, 0]),
+    ) as Record<AuditErrorCode, number>;
+    for (const row of errorRows) {
+      if (AUDIT_ERROR_CODES.includes(row.error_code)) {
+        errorReasons[row.error_code] += Number(row.count);
+        byTool[row.tool].errorReasons[row.error_code] += Number(row.count);
+      }
     }
     return {
       totalCalls: Number(totals.calls),
@@ -1631,6 +1781,8 @@ export class ContextStore {
       requestBytes: Number(totals.request_bytes),
       responseBytes: Number(totals.response_bytes),
       averageDurationMs: Number(Number(totals.average_duration_ms).toFixed(2)),
+      totalRetries: Number(totals.total_retries),
+      errorReasons,
       latestAt: totals.latest_at,
       byTool,
     };

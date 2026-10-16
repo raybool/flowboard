@@ -54,11 +54,19 @@ stale handoff and receive a revision conflict error. Task IDs are limited to
 values to 1,200 characters; the complete snapshot is limited to 12,000 UTF-8
 bytes. Private reasoning, secrets, and full logs are rejected. These storage
 limits are independent from the stricter MCP response token budget, so retrieval
-remains bounded without shortening stored handoff data.
+remains bounded without shortening stored handoff data. File paths are validated
+separately from handoff text: safe repository-relative paths such as
+`apps/api/src/modules/auth/auth.module.ts` are accepted, while absolute paths,
+traversal, control characters, and sensitive path metadata are rejected.
+`context.get_task` checks every `source_references` entry against its exact
+indexed `source_path` and hash using worktree freshness; unverifiable entries
+are reported as `unknown` and only referenced files are inspected.
 
 Every MCP read and `context.update_task_context` call writes an audit row with
 duration, request/response byte counts, success, and (for task updates) revisions
-before and after. Audit rows contain metrics only, never the handoff contents.
+before and after. Failed validation is classified by a safe error code and
+explicit retry counts are recorded when supplied. Audit rows contain metrics
+only, never the handoff contents.
 
 ## Operating model
 

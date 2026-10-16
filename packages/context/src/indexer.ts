@@ -7,6 +7,7 @@ import {
   containsSensitiveMetadata,
   containsSensitivePathMetadata,
   ContextStore,
+  isSafeRelativeRepositoryPath,
   type FreshnessState,
   type SourceSnapshot,
 } from './store.js';
@@ -112,6 +113,9 @@ function toPosixPath(value: string): string {
 }
 
 function isSafeRelativePath(value: string): boolean {
+  if (!isSafeRelativeRepositoryPath(value)) {
+    return false;
+  }
   const normalized = path.posix.normalize(value);
   if (
     value.length === 0 ||
@@ -436,6 +440,29 @@ export class GitContextIndexer {
       staleIds,
       unknownIds,
     };
+  }
+
+  refreshStalenessForPaths(paths: readonly string[]): StalenessResult {
+    const uniquePaths = [...new Set(paths)];
+    const stored = new Map(
+      this.store.sourceReferencesForPaths(uniquePaths).map((reference) => [
+        reference.path,
+        reference,
+      ]),
+    );
+    return this.refreshStaleness(
+      uniquePaths.map((sourcePath) => {
+        const reference = stored.get(sourcePath);
+        return {
+          id: sourcePath,
+          source: {
+            path: sourcePath,
+            hash: reference?.hash ?? '',
+          },
+        };
+      }),
+      false,
+    );
   }
 
   index(options: { full?: boolean } = {}): IndexResult {

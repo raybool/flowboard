@@ -5,6 +5,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 import { z } from 'zod';
 import { GitContextIndexer, resolveGitRoot } from './indexer.js';
 import {
+  type AuditErrorCode,
   type AuditToolName,
   ContextStore,
   type ContextRecord,
@@ -244,6 +245,30 @@ function freshnessFor(
   return { ...record, stale: freshness === 'stale', freshness };
 }
 
+function combineFreshness(
+  ...values: Array<{
+    commit: string;
+    checked: number;
+    fresh: number;
+    stale: number;
+    unknown: number;
+    changed: number;
+    staleIds: string[];
+    unknownIds: string[];
+  }>
+) {
+  return {
+    commit: values.find((value) => value.commit !== 'unknown')?.commit ?? 'unknown',
+    checked: values.reduce((total, value) => total + value.checked, 0),
+    fresh: values.reduce((total, value) => total + value.fresh, 0),
+    stale: values.reduce((total, value) => total + value.stale, 0),
+    unknown: values.reduce((total, value) => total + value.unknown, 0),
+    changed: values.reduce((total, value) => total + value.changed, 0),
+    staleIds: values.flatMap((value) => value.staleIds),
+    unknownIds: values.flatMap((value) => value.unknownIds),
+  };
+}
+
 function limitedRecords(
   base: Record<string, unknown>,
   records: ContextRecord[],
@@ -359,6 +384,17 @@ function responseBytes(response: unknown): number {
   }, 0);
 }
 
+function auditErrorCode(error: unknown): AuditErrorCode {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/revision conflict/iu.test(message)) return 'revision_conflict';
+  if (/secret|personal data/iu.test(message)) return 'sensitive_data';
+  if (/path|traversal|repository root|control/iu.test(message)) return 'unsafe_path';
+  if (/too large|at most|maximum/iu.test(message)) return 'size_limit';
+  if (/not found/iu.test(message)) return 'not_found';
+  if (/must|required|unsupported|concise|empty/iu.test(message)) return 'invalid_input';
+  return 'operation_failed';
+}
+
 function auditToolCall<T>(
   store: ContextStore,
   tool: AuditToolName,
@@ -367,6 +403,7 @@ function auditToolCall<T>(
     agentRole?: string;
     requestBytes?: number;
     revisionBefore?: number | null;
+    retryCount?: number;
   },
   operation: () => AuditedOperationResult<T>,
 ): T {
@@ -378,6 +415,7 @@ function auditToolCall<T>(
     responseBytes: number;
     success: boolean;
     revisionAfter?: number | null;
+    errorCode?: AuditErrorCode | null;
   }) => {
     // A logging failure must not turn a successful MCP read into a tool failure.
     try {
@@ -389,7 +427,9 @@ function auditToolCall<T>(
         requestBytes: context.requestBytes ?? 0,
         durationMs: duration(),
         revisionBefore: context.revisionBefore,
+        retryCount: context.retryCount,
         revisionAfter: input.revisionAfter,
+        errorCode: input.errorCode,
         ...input,
       });
     } catch {
@@ -407,7 +447,12 @@ function auditToolCall<T>(
     });
     return operationResult.response;
   } catch (error) {
-    writeAudit({ resultCount: 0, responseBytes: 0, success: false });
+    writeAudit({
+      resultCount: 0,
+      responseBytes: 0,
+      success: false,
+      errorCode: auditErrorCode(error),
+    });
     throw error;
   }
 }
@@ -656,18 +701,35 @@ export function createContextServer(options: {
             throw new Error('Provide taskId or task_id.');
           }
           const candidates = store.getTask(lookupTaskId, includeProposed, true, MAX_SEARCH_LIMIT);
-          const freshness = indexer.refreshStaleness(candidates, false);
-          const staleIds = new Set(freshness.staleIds);
-          const unknownIds = new Set(freshness.unknownIds);
+          const recordFreshness = indexer.refreshStaleness(candidates, false);
+          const taskContext = store.getTaskContext(lookupTaskId);
+          const sourceReferencesFreshness = taskContext
+            ? indexer.refreshStalenessForPaths(taskContext.sourceReferences)
+            : {
+                commit: recordFreshness.commit,
+                checked: 0,
+                fresh: 0,
+                stale: 0,
+                unknown: 0,
+                changed: 0,
+                staleIds: [],
+                unknownIds: [],
+              };
+          const freshness = combineFreshness(recordFreshness, sourceReferencesFreshness);
+          const staleIds = new Set(recordFreshness.staleIds);
+          const unknownIds = new Set(recordFreshness.unknownIds);
           const records = candidates
             .filter((record) => !staleIds.has(record.id))
             .map((record) => freshnessFor(record, staleIds, unknownIds));
-          const taskContext = store.getTaskContext(lookupTaskId);
           const taskContextData = taskContext
             ? taskContextPayload(taskContext, limits.retrievalTokenBudget)
             : { taskContext: null, taskContextTruncated: false };
           const limited = limitedRecords(
-            { freshness, ...taskContextData },
+            {
+              freshness,
+              source_references_freshness: sourceReferencesFreshness,
+              ...taskContextData,
+            },
             records,
             limits.readLimit,
             limits.retrievalTokenBudget,
@@ -698,6 +760,7 @@ export function createContextServer(options: {
         verification_results: z.array(z.string().min(1)).optional(),
         open_issues: z.array(z.string().min(1)).optional(),
         source_references: z.array(z.string().min(1)).optional(),
+        retry_count: z.number().int().min(0).max(100).optional(),
       }),
       annotations: { readOnlyHint: false, destructiveHint: false },
     },
@@ -713,6 +776,7 @@ export function createContextServer(options: {
       verification_results,
       open_issues,
       source_references,
+      retry_count,
     }) => {
       const revisionBefore = store.getTaskContext(task_id)?.revision ?? 0;
       const requestBytes = serializedBytes({
@@ -727,11 +791,18 @@ export function createContextServer(options: {
         verification_results,
         open_issues,
         source_references,
+        retry_count,
       });
       return auditToolCall(
         store,
         'context.update_task_context',
-        { taskId: task_id, agentRole: agent_role, requestBytes, revisionBefore },
+        {
+          taskId: task_id,
+          agentRole: agent_role,
+          requestBytes,
+          revisionBefore,
+          retryCount: retry_count,
+        },
         () => {
           const taskContext = store.updateTaskContext({
             taskId: task_id,

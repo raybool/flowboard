@@ -72,6 +72,14 @@ interface ToolPayload {
     staleIds?: string[];
     unknownIds?: string[];
   };
+  source_references_freshness?: {
+    checked: number;
+    fresh: number;
+    stale: number;
+    unknown: number;
+    staleIds?: string[];
+    unknownIds?: string[];
+  };
   returnedCount?: number;
   totalCount?: number;
   omittedCount?: number;
@@ -92,6 +100,8 @@ interface AuditRow {
   success: number;
   revisionBefore: number | null;
   revisionAfter: number | null;
+  retryCount?: number;
+  errorCode?: string | null;
 }
 
 function git(root: string, args: string[]): string {
@@ -185,7 +195,8 @@ function databaseAuditRows(fixture: Fixture): AuditRow[] {
                 duration_ms AS durationMs,
                 result_count AS resultCount, response_bytes AS responseBytes,
                 success, revision_before AS revisionBefore,
-                revision_after AS revisionAfter
+                revision_after AS revisionAfter,
+                retry_count AS retryCount, error_code AS errorCode
          FROM context_audit_log
          ORDER BY id`,
       )
@@ -1048,6 +1059,83 @@ test('task context is saved, updated in place, and returned by get_task', async 
       }),
     /secret|personal data/iu,
   );
+});
+
+test('task handoff accepts api paths, checks referenced sources, and rejects unsafe paths', async (t) => {
+  const fixture = createFixture();
+  const apiRoot = path.join(fixture.root, 'apps', 'api');
+  mkdirSync(path.join(apiRoot, 'src', 'modules', 'auth', 'guards'), { recursive: true });
+  mkdirSync(path.join(apiRoot, 'prisma'), { recursive: true });
+  writeFileSync(
+    path.join(apiRoot, 'src', 'modules', 'auth', 'auth.module.ts'),
+    'export class AuthModule {}\n',
+  );
+  const guardPath = path.join(apiRoot, 'src', 'modules', 'auth', 'guards', 'access-token.guard.ts');
+  writeFileSync(guardPath, 'export class AccessTokenGuard {}\n');
+  writeFileSync(path.join(apiRoot, 'prisma', 'schema.prisma'), 'model User { id String @id }\n');
+  git(fixture.root, ['add', 'apps/api']);
+  git(fixture.root, ['commit', '-qm', 'add api sources']);
+  cli(fixture, 'index');
+
+  const connection = await connectClient(fixture, 'flowboard-api-paths');
+  t.after(async () => connection.client.close());
+  const sourceReferences = [
+    'apps/api/src/modules/auth/auth.module.ts',
+    'apps/api/src/modules/auth/guards/access-token.guard.ts',
+    'apps/api/prisma/schema.prisma',
+  ];
+  const saved = structuredPayload(
+    await connection.client.callTool({
+      name: 'context.update_task_context',
+      arguments: {
+        task_id: 'FB-003.15',
+        objective: 'Make MCP context handoffs reliable.',
+        affected_files: sourceReferences,
+        source_references: sourceReferences,
+      },
+    }),
+  );
+  assert.equal(saved.taskContext?.revision, 1);
+
+  const fresh = structuredPayload(
+    await connection.client.callTool({
+      name: 'context.get_task',
+      arguments: { task_id: 'FB-003.15' },
+    }),
+  );
+  assert.equal(fresh.source_references_freshness?.checked, 3);
+  assert.equal(fresh.source_references_freshness?.fresh, 3);
+  assert.equal(fresh.source_references_freshness?.stale, 0);
+
+  writeFileSync(guardPath, 'export class AccessTokenGuardChanged {}\n');
+  const stale = structuredPayload(
+    await connection.client.callTool({
+      name: 'context.get_task',
+      arguments: { task_id: 'FB-003.15' },
+    }),
+  );
+  assert.equal(stale.source_references_freshness?.checked, 3);
+  assert.equal(stale.source_references_freshness?.stale, 1);
+  assert.deepEqual(
+    stale.source_references_freshness?.staleIds,
+    ['apps/api/src/modules/auth/guards/access-token.guard.ts'],
+  );
+
+  for (const unsafePath of ['../../etc/passwd', '/etc/passwd', 'apps/api/../secret.ts', 'apps/api/\u0000.ts']) {
+    await expectToolFailure(
+      () => connection.client.callTool({
+        name: 'context.update_task_context',
+        arguments: {
+          task_id: 'FB-003.15',
+          source_references: [unsafePath],
+        },
+      }),
+      /path|traversal|safe|secret/iu,
+    );
+  }
+  const failed = databaseAuditRows(fixture).filter((row) => row.taskId === 'FB-003.15' && row.success === 0);
+  assert.equal(failed.length, 4);
+  assert.ok(failed.every((row) => row.errorCode === 'unsafe_path'));
 });
 
 test('task handoff accepts substantive notes, is idempotent, and audits revisions', async (t) => {
