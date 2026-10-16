@@ -22,7 +22,19 @@ export const envSchema = z.object({
 
   JWT_ACCESS_EXPIRES_IN: z
     .string()
-    .default('15m'),
+    .regex(/^[1-9]\d*(s|m|h|d)$/, 'Use a duration such as 15m')
+    .default('15m')
+    .transform((value) => {
+      const unit = value.slice(-1);
+      const amount = Number(value.slice(0, -1));
+      const multiplier = { s: 1, m: 60, h: 3600, d: 86400 }[
+        unit as 's' | 'm' | 'h' | 'd'
+      ];
+      return amount * multiplier;
+    })
+    .pipe(z.number().int().positive().safe()),
+
+  TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(10).default(0),
 });
 
 export type EnvConfig = z.infer<typeof envSchema>;

@@ -37,9 +37,22 @@ model Session {
   createdAt        DateTime  @default(now()) @map("created_at")
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  usedRefreshTokens UsedRefreshToken[]
 
   @@index([userId])
+  @@index([expiresAt])
   @@map("sessions")
+}
+
+model UsedRefreshToken {
+  tokenHash String @id @map("token_hash")
+  sessionId String @map("session_id")
+  usedAt DateTime @default(now()) @map("used_at")
+
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+  @@map("used_refresh_tokens")
 }
 
 enum WorkspaceRole {

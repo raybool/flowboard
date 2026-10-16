@@ -97,3 +97,25 @@ Summarize:
 - Do not commit unless requested.
 
 Communicate with the user in Russian.
+
+## Shared project context
+
+### Mandatory knowledge workflow
+
+All agents working on a scoped task (Prompt Engineer, Designer, Architect, Developer, Reviewer, and QA) must follow this sequence before analysis, implementation, review, or verification:
+
+1. Start with exactly one narrow MCP `context.search` for the current stage, passing the task ID and `agent_role`, with `limit = 5` (or a smaller value when enough records are expected). Reuse existing confirmed context when its source path, commit, and hash are still current; the bounded search is for discovery and freshness, not a reason to load more records.
+2. Do not repeat an identical search. Refine the query only when the first result is absent or insufficient, and keep every search bounded to 3–5 results. Never load the whole knowledge base or all Skills.
+3. Call MCP `context.get_task` only when a task ID exists and the current stage needs the previous handoff snapshot. It is not a general knowledge lookup.
+4. Treat `proposed`, `assumption`, and `stale` records as leads only. Check selected records against their source path and current Git state. If context is absent, stale, or insufficient, inspect only the necessary sources with targeted `rg` and file reads.
+5. Immediately before editing, re-read the exact files to be changed and inspect their current `git diff`; do not edit from an old context snapshot. Keep business logic and unrelated files out of scope.
+6. At the end of a stage, call MCP `context.update_task_context` only for a substantial state change or before handing the task to another agent. Use the concise fields `task_id`, `objective`, `affected_files`, `architecture_decisions`, `constraints`, `completed_work`, `verification_results`, `open_issues`, and `source_references`. Repeating an identical update is safe but does not create a new revision. Use `context.save` only for a concise durable fact or decision with a verifiable source path. Never store private reasoning, secrets, full source files, or full logs.
+7. If MCP is unavailable or a required call fails, explicitly report `MCP unavailable — repository fallback`, use targeted `rg`/file reads, and do not claim that MCP knowledge was used. Record the limitation in `open_issues` when a task-context update is possible. Preserve the normal security, type-check, lint, and focused-test gates.
+
+The workflow is mandatory behavior, not merely a configuration hint. A run is considered verified only when the MCP audit log contains the role's `context.search` call and, when prior task state was needed, its `context.get_task` call. Check it with:
+
+```text
+pnpm --filter @flowboard/context context stats --task-id <task-id> --agent-role <agent-role>
+```
+
+The statistics prove recorded MCP read calls and safe aggregate sizes; they do not prove that an agent followed the workflow unless the calls have the expected task and role metadata. Do not load all Skills automatically: load only a specifically relevant Skill when the task requires it.

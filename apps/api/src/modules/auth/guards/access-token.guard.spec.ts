@@ -1,5 +1,14 @@
-import type { ExecutionContext } from '@nestjs/common';
-import { JwtService } from '@nestjs/jwt';
+import {
+  ForbiddenException,
+  ServiceUnavailableException,
+  UnauthorizedException,
+  type ExecutionContext,
+} from '@nestjs/common';
+import {
+  JsonWebTokenError,
+  JwtService,
+  TokenExpiredError,
+} from '@nestjs/jwt';
 import { Reflector } from '@nestjs/core';
 
 import { AuthService } from '../auth.service';
@@ -80,5 +89,61 @@ describe('AccessTokenGuard', () => {
     await expect(guard.canActivate(context)).resolves.toBe(true);
     expect(authService.validateAccess).toHaveBeenCalledWith(payload);
     expect(request.user).toEqual(user);
+  });
+
+  it.each([
+    new JsonWebTokenError('malformed'),
+    new TokenExpiredError('expired', new Date()),
+  ])('returns 401 for invalid JWTs', async (error) => {
+    jwt.verifyAsync.mockRejectedValue(error);
+    const context = createContext(TestController.prototype.protectedRoute, {
+      headers: { authorization: 'Bearer invalid' },
+    });
+
+    await expect(guard.canActivate(context)).rejects.toBeInstanceOf(
+      UnauthorizedException,
+    );
+    expect(authService.validateAccess).not.toHaveBeenCalled();
+  });
+
+  it('preserves infrastructure errors from JWT verification', async () => {
+    const error = new ServiceUnavailableException();
+    jwt.verifyAsync.mockRejectedValue(error);
+    const context = createContext(TestController.prototype.protectedRoute, {
+      headers: { authorization: 'Bearer token' },
+    });
+
+    await expect(guard.canActivate(context)).rejects.toBe(error);
+  });
+
+  it.each([null, 'text', { sub: 'user-id', type: 'access' }])
+    ('rejects malformed JWT payloads with 401', async (payload) => {
+      jwt.verifyAsync.mockResolvedValue(payload);
+      const context = createContext(TestController.prototype.protectedRoute, {
+        headers: { authorization: 'Bearer token' },
+      });
+
+      await expect(guard.canActivate(context)).rejects.toBeInstanceOf(
+        UnauthorizedException,
+      );
+      expect(authService.validateAccess).not.toHaveBeenCalled();
+    });
+
+  it.each([
+    new UnauthorizedException('Session expired'),
+    new ForbiddenException('Insufficient permissions'),
+    new ServiceUnavailableException(),
+  ])('preserves session validation errors', async (error) => {
+    jwt.verifyAsync.mockResolvedValue({
+      sub: 'user-id',
+      sid: 'session-id',
+      type: 'access',
+    });
+    authService.validateAccess.mockRejectedValue(error);
+    const context = createContext(TestController.prototype.protectedRoute, {
+      headers: { authorization: 'Bearer token' },
+    });
+
+    await expect(guard.canActivate(context)).rejects.toBe(error);
   });
 });

@@ -4,9 +4,10 @@ import { VersioningType, ValidationPipe, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { EnvConfig } from './config/env.schema';
 import { setupSwagger } from './config/swagger.config';
+import type { NestExpressApplication } from '@nestjs/platform-express';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create<NestExpressApplication>(AppModule);
 
   const config = app.get(ConfigService<EnvConfig, true>);
 
@@ -14,6 +15,7 @@ async function bootstrap() {
   const frontendUrl = config.get('FRONTEND_URL', {
     infer: true,
   });
+  app.set('trust proxy', config.get('TRUST_PROXY_HOPS', { infer: true }));
 
   app.enableShutdownHooks();
 

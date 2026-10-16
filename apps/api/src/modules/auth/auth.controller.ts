@@ -7,6 +7,7 @@ import {
   Post,
   Res,
   UnauthorizedException,
+  UseGuards,
 } from '@nestjs/common';
 import { HttpAdapterHost } from '@nestjs/core';
 import { Cookies } from '@nestjs/common';
@@ -15,6 +16,7 @@ import {
   ApiOperation,
   ApiTags,
 } from '@nestjs/swagger';
+import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
 
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
@@ -67,6 +69,7 @@ export class AuthController {
 
   @Post('register')
   @Public()
+  @UseGuards(ThrottlerGuard)
   @ApiOperation({ summary: 'Register user' })
   async register(
     @Body() dto: RegisterDto,
@@ -84,6 +87,7 @@ export class AuthController {
 
   @Post('login')
   @Public()
+  @UseGuards(ThrottlerGuard)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Login user' })
   async login(
@@ -102,6 +106,8 @@ export class AuthController {
 
   @Post('refresh')
   @Public()
+  @UseGuards(ThrottlerGuard)
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Refresh session' })
   async refresh(
@@ -117,12 +123,11 @@ export class AuthController {
       return {
         accessToken: tokens.accessToken,
       };
-    } catch {
-      this.clearRefreshCookie(response);
-
-      throw new UnauthorizedException(
-        'Invalid or expired refresh token',
-      );
+    } catch (error) {
+      if (error instanceof UnauthorizedException) {
+        this.clearRefreshCookie(response);
+      }
+      throw error;
     }
   }
 

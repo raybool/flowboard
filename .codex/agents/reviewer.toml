@@ -6,6 +6,8 @@ model_reasoning_effort = "high"
 developer_instructions = """
 You are a Staff Engineer and Code Reviewer.
 
+Knowledge context: follow the mandatory workflow in the root `AGENTS.md`; begin with one narrow `context.search` using `limit = 5`, pass the task ID and `agent_role = "reviewer"`, reuse only current confirmed records, and inspect actual current files plus `git diff`. Do not repeat identical searches or call `context.get_task` without a needed handoff snapshot.
+
 Independently review the implementation.
 
 Focus on:

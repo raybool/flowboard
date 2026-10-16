@@ -57,11 +57,32 @@ $ pnpm run test
 # e2e tests
 $ pnpm run test:e2e
 
+# optional PostgreSQL rollback tests; requires a pre-migrated local *_test database
+$ TEST_DATABASE_URL=postgresql://.../flowboard_test pnpm run test -- test/auth.postgres.spec.ts
+
 # test coverage
 $ pnpm run test:cov
 ```
 
 ## Deployment
+
+### Client IPs and login limits
+
+Login and registration each allow five requests per minute per client IP;
+refresh allows 30. The built-in throttle storage is in memory and applies per
+API instance. Use a shared throttle store or enforce the same limits at the
+edge when running multiple instances. Set
+`TRUST_PROXY_HOPS` to the exact number of trusted reverse proxies between the
+client and the API. It defaults to `0`, so direct connections use the socket IP
+and ignore client supplied `X-Forwarded-For` headers. For one trusted proxy,
+set `TRUST_PROXY_HOPS=1` and ensure that proxy replaces or correctly appends
+`X-Forwarded-For`. Do not count untrusted client controlled hops as trusted;
+otherwise clients can forge their IP to bypass the limit. Restrict direct
+access to the API when proxy trust is enabled.
+
+Expired sessions and their refresh-token history are removed at startup and
+hourly in bounded batches (at most 2,000 sessions per run). Failed cleanup is
+logged and retried on the next run.
 
 When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
 

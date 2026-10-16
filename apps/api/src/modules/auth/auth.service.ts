@@ -63,6 +63,7 @@ export class AuthService {
   ): Promise<AuthTokens> {
     const sessionId = randomUUID();
     const refreshToken = this.generateRefreshToken();
+    const accessToken = await this.signAccessToken(userId, sessionId);
 
     await this.prisma.session.create({
       data: {
@@ -72,11 +73,6 @@ export class AuthService {
         expiresAt: new Date(Date.now() + REFRESH_TTL_MS),
       },
     });
-
-    const accessToken = await this.signAccessToken(
-      userId,
-      sessionId,
-    );
 
     return { accessToken, refreshToken };
   }
@@ -88,14 +84,27 @@ export class AuthService {
       type: argon2.argon2id,
     });
 
+    const userId = randomUUID();
+    const sessionId = randomUUID();
+    const refreshToken = this.generateRefreshToken();
+    const accessToken = await this.signAccessToken(userId, sessionId);
+
     let user;
 
     try {
       user = await this.prisma.user.create({
         data: {
+          id: userId,
           email,
           name: dto.name.trim(),
           passwordHash,
+          sessions: {
+            create: {
+              id: sessionId,
+              refreshTokenHash: this.hashToken(refreshToken),
+              expiresAt: new Date(Date.now() + REFRESH_TTL_MS),
+            },
+          },
         },
       });
     } catch (error) {
@@ -109,15 +118,14 @@ export class AuthService {
       throw error;
     }
 
-    const tokens = await this.createSession(user.id);
-
     return {
       user: {
         id: user.id,
         email: user.email,
         name: user.name,
       },
-      ...tokens,
+      accessToken,
+      refreshToken,
     };
   }
 
@@ -168,8 +176,12 @@ export class AuthService {
       where: { refreshTokenHash: tokenHash },
     });
 
+    if (!session) {
+      await this.revokeReplayedSession(tokenHash);
+      throw new UnauthorizedException('Invalid or expired refresh token');
+    }
+
     if (
-      !session ||
       session.revokedAt ||
       session.expiresAt <= new Date()
     ) {
@@ -179,36 +191,60 @@ export class AuthService {
     }
 
     const newRefreshToken = this.generateRefreshToken();
-
-    // Compare-and-swap: только один конкурентный refresh
-    // может успешно заменить текущий токен.
-    const result = await this.prisma.session.updateMany({
-      where: {
-        id: session.id,
-        refreshTokenHash: tokenHash,
-        revokedAt: null,
-        expiresAt: { gt: new Date() },
-      },
-      data: {
-        refreshTokenHash: this.hashToken(newRefreshToken),
-      },
-    });
-
-    if (result.count !== 1) {
-      throw new UnauthorizedException(
-        'Refresh token already used',
-      );
-    }
-
     const accessToken = await this.signAccessToken(
       session.userId,
       session.id,
     );
 
+    // The old hash and the replacement must commit together. A failed history
+    // insert rolls the session update back, so a client can retry safely.
+    const rotated = await this.prisma.$transaction(async (tx) => {
+      const result = await tx.session.updateMany({
+        where: {
+          id: session.id,
+          refreshTokenHash: tokenHash,
+          revokedAt: null,
+          expiresAt: { gt: new Date() },
+        },
+        data: {
+          refreshTokenHash: this.hashToken(newRefreshToken),
+        },
+      });
+
+      if (result.count !== 1) return false;
+
+      await tx.usedRefreshToken.create({
+        data: { tokenHash, sessionId: session.id },
+      });
+
+      return true;
+    });
+
+    if (!rotated) {
+      await this.revokeReplayedSession(tokenHash);
+      throw new UnauthorizedException(
+        'Refresh token already used',
+      );
+    }
+
     return {
       accessToken,
       refreshToken: newRefreshToken,
     };
+  }
+
+  private async revokeReplayedSession(tokenHash: string): Promise<void> {
+    const used = await this.prisma.usedRefreshToken.findUnique({
+      where: { tokenHash },
+      select: { sessionId: true },
+    });
+
+    if (used) {
+      await this.prisma.session.updateMany({
+        where: { id: used.sessionId, revokedAt: null },
+        data: { revokedAt: new Date() },
+      });
+    }
   }
 
   async logout(refreshToken?: string): Promise<void> {

@@ -4,7 +4,12 @@ import {
   Injectable,
   UnauthorizedException,
 } from '@nestjs/common';
-import { JwtService } from '@nestjs/jwt';
+import {
+  JsonWebTokenError,
+  JwtService,
+  NotBeforeError,
+  TokenExpiredError,
+} from '@nestjs/jwt';
 import { Reflector } from '@nestjs/core';
 import type { Request } from 'express';
 
@@ -47,26 +52,31 @@ export class AccessTokenGuard implements CanActivate {
 
     const token = authorization.slice(7);
 
+    let payload: AccessTokenPayload;
     try {
-      const payload =
-        await this.jwt.verifyAsync<AccessTokenPayload>(token);
-
+      payload = await this.jwt.verifyAsync<AccessTokenPayload>(token);
+    } catch (error) {
       if (
-        payload.type !== 'access' ||
-        typeof payload.sub !== 'string' ||
-        typeof payload.sid !== 'string'
+        error instanceof JsonWebTokenError ||
+        error instanceof TokenExpiredError ||
+        error instanceof NotBeforeError
       ) {
-        throw new UnauthorizedException('Invalid token');
+        throw new UnauthorizedException('Invalid or expired access token');
       }
-
-      request.user =
-        await this.authService.validateAccess(payload);
-
-      return true;
-    } catch {
-      throw new UnauthorizedException(
-        'Invalid or expired access token',
-      );
+      throw error;
     }
+
+    if (
+      !payload ||
+      typeof payload !== 'object' ||
+      payload.type !== 'access' ||
+      typeof payload.sub !== 'string' ||
+      typeof payload.sid !== 'string'
+    ) {
+      throw new UnauthorizedException('Invalid access token');
+    }
+
+    request.user = await this.authService.validateAccess(payload);
+    return true;
   }
 }

@@ -1,8 +1,18 @@
 
 # Main orchestrator model
 model_reasoning_effort = "high"
+mcp_optional_startup_grace_ms = 0
 
 [agents]
 enabled = true
 max_concurrent_threads_per_session = 6
 default_subagent_reasoning_effort = "medium"
+
+[mcp_servers.flowboard_context]
+command = "pnpm"
+args = ["--filter", "@flowboard/context", "mcp"]
+cwd = "."
+enabled = true
+startup_timeout_sec = 15
+tool_timeout_sec = 20
+enabled_tools = ["context.search", "context.get", "context.save", "context.update", "context.get_task", "context.update_task_context", "context.invalidate"]
