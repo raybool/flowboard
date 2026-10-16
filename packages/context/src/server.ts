@@ -9,6 +9,7 @@ import {
   ContextStore,
   type ContextRecord,
   type ContextRecordKind,
+  type FreshnessState,
   type TaskContext,
   type TaskContextPatch,
   TASK_CONTEXT_LIMITS,
@@ -222,8 +223,25 @@ function boundedBase(
         ? freshnessRecord.staleIds.slice(0, 3)
         : [],
       staleIdsTruncated: true,
+      unknownIds: Array.isArray(freshnessRecord.unknownIds)
+        ? freshnessRecord.unknownIds.slice(0, 3)
+        : [],
+      unknownIdsTruncated: true,
     },
   };
+}
+
+function freshnessFor(
+  record: ContextRecord,
+  staleIds: ReadonlySet<string>,
+  unknownIds: ReadonlySet<string>,
+): ContextRecord {
+  const freshness: FreshnessState = staleIds.has(record.id)
+    ? 'stale'
+    : unknownIds.has(record.id)
+      ? 'unknown'
+      : 'fresh';
+  return { ...record, stale: freshness === 'stale', freshness };
 }
 
 function limitedRecords(
@@ -450,9 +468,10 @@ export function createContextServer(options: {
         });
         const freshness = indexer.refreshStaleness(candidates, false);
         const staleIds = new Set(freshness.staleIds);
+        const unknownIds = new Set(freshness.unknownIds);
         const records = candidates
           .filter((record) => !staleIds.has(record.id))
-          .map((record) => ({ ...record, stale: false }));
+          .map((record) => freshnessFor(record, staleIds, unknownIds));
         const limited = limitedRecords(
           { freshness },
           records,
@@ -503,10 +522,8 @@ export function createContextServer(options: {
         });
         const freshness = indexer.refreshStaleness(records, false);
         const staleIds = new Set(freshness.staleIds);
-        const freshRecords = records.map((record) => ({
-          ...record,
-          stale: staleIds.has(record.id),
-        }));
+        const unknownIds = new Set(freshness.unknownIds);
+        const freshRecords = records.map((record) => freshnessFor(record, staleIds, unknownIds));
         const limited = limitedRecords(
           { freshness },
           freshRecords,
@@ -641,9 +658,10 @@ export function createContextServer(options: {
           const candidates = store.getTask(lookupTaskId, includeProposed, true, MAX_SEARCH_LIMIT);
           const freshness = indexer.refreshStaleness(candidates, false);
           const staleIds = new Set(freshness.staleIds);
+          const unknownIds = new Set(freshness.unknownIds);
           const records = candidates
             .filter((record) => !staleIds.has(record.id))
-            .map((record) => ({ ...record, stale: false }));
+            .map((record) => freshnessFor(record, staleIds, unknownIds));
           const taskContext = store.getTaskContext(lookupTaskId);
           const taskContextData = taskContext
             ? taskContextPayload(taskContext, limits.retrievalTokenBudget)

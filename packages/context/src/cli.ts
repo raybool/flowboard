@@ -5,7 +5,7 @@ import path from 'node:path';
 import { stdin, stdout } from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { GitContextIndexer, resolveGitRoot } from './indexer.js';
-import { ContextStore, type AuditToolName } from './store.js';
+import { ContextStore, type AuditToolName, type ContextRecord, type FreshnessState } from './store.js';
 
 interface CliContext {
   root: string;
@@ -28,6 +28,19 @@ function createCliContext(): CliContext {
 
 function writeJson(value: unknown): void {
   stdout.write(`${JSON.stringify(value, null, 2)}\n`);
+}
+
+function withFreshness(
+  record: ContextRecord,
+  staleIds: ReadonlySet<string>,
+  unknownIds: ReadonlySet<string>,
+): ContextRecord {
+  const freshness: FreshnessState = staleIds.has(record.id)
+    ? 'stale'
+    : unknownIds.has(record.id)
+      ? 'unknown'
+      : 'fresh';
+  return { ...record, stale: freshness === 'stale', freshness };
 }
 
 function usage(): string {
@@ -120,10 +133,12 @@ export async function runCli(args = process.argv.slice(2)): Promise<number> {
           includeStale: true,
         });
         const freshness = context.indexer.refreshStaleness(candidates);
-        const records = context.store.search(query, {
-          includeProposed: rest.includes('--all'),
-          limit,
-        });
+        const staleIds = new Set(freshness.staleIds);
+        const unknownIds = new Set(freshness.unknownIds);
+        const records = candidates
+          .filter((record) => !staleIds.has(record.id))
+          .slice(0, limit)
+          .map((record) => withFreshness(record, staleIds, unknownIds));
         writeJson({ command, query, freshness, count: records.length, records });
         return 0;
       }
@@ -170,10 +185,11 @@ export async function runCli(args = process.argv.slice(2)): Promise<number> {
           throw new Error(`Context record ${id} was not found.`);
         }
         const freshness = context.indexer.refreshStaleness([record]);
-        record = context.store.get(id);
-        if (!record) {
-          throw new Error(`Context record ${id} was not found.`);
-        }
+        record = withFreshness(
+          record,
+          new Set(freshness.staleIds),
+          new Set(freshness.unknownIds),
+        );
         writeJson({ command, freshness, record });
         return 0;
       }

@@ -7,6 +7,7 @@ import {
   containsSensitiveMetadata,
   containsSensitivePathMetadata,
   ContextStore,
+  type FreshnessState,
   type SourceSnapshot,
 } from './store.js';
 
@@ -25,15 +26,30 @@ export interface IndexResult {
 export interface StalenessResult {
   commit: string;
   checked: number;
+  fresh: number;
   stale: number;
+  unknown: number;
   changed: number;
   staleIds: string[];
+  unknownIds: string[];
 }
 
 interface StalenessCandidate {
   id: string;
   source: Pick<SourceSnapshot, 'path' | 'hash'>;
 }
+
+interface CachedSnapshot {
+  signature: string;
+  snapshot: SourceSnapshot;
+}
+
+interface WorktreeSource {
+  snapshot: SourceSnapshot;
+  content: string;
+}
+
+const SOURCE_HASH_PATTERN = /^[a-f0-9]{64}$/iu;
 
 const ALLOWED_EXTENSIONS = new Set([
   '.cjs',
@@ -196,6 +212,7 @@ function languageLabel(extension: string): string {
 
 export class GitContextIndexer {
   readonly root: string;
+  private readonly snapshotCache = new Map<string, CachedSnapshot>();
 
   constructor(
     private readonly store: ContextStore,
@@ -264,20 +281,25 @@ export class GitContextIndexer {
   }
 
   snapshotSource(relativePath: string): SourceSnapshot {
-    return this.readSourceAtCommit(relativePath, this.currentCommit()).snapshot;
+    return this.readWorktreeSource(relativePath, this.currentCommit()).snapshot;
   }
 
-  private snapshotSourceAtCommit(
+  private snapshotSourceFromWorktree(
     relativePath: string,
     commit: string,
   ): SourceSnapshot {
-    return this.readSourceAtCommit(relativePath, commit).snapshot;
+    return this.readWorktreeSource(relativePath, commit, false).snapshot;
   }
 
-  private readSourceAtCommit(
+  private fileSignature(stats: { dev: number; ino: number; size: number; mtimeMs: number; ctimeMs: number }): string {
+    return [stats.dev, stats.ino, stats.size, stats.mtimeMs, stats.ctimeMs].join(':');
+  }
+
+  private readWorktreeSource(
     relativePath: string,
     commit: string,
-  ): { snapshot: SourceSnapshot; content: string } {
+    includeContent = true,
+  ): WorktreeSource {
     const normalized = toPosixPath(relativePath.trim());
     if (!isSafeRelativePath(normalized)) {
       throw new Error(`Source path is not eligible for context storage: ${relativePath}`);
@@ -293,6 +315,14 @@ export class GitContextIndexer {
     }
     if (stats.size > MAX_SOURCE_BYTES) {
       throw new Error(`Source is larger than ${MAX_SOURCE_BYTES} bytes.`);
+    }
+    const signature = this.fileSignature(stats);
+    const cached = this.snapshotCache.get(normalized);
+    if (cached?.signature === signature && !includeContent) {
+      return {
+        snapshot: { ...cached.snapshot, commit },
+        content: '',
+      };
     }
     const realSourcePath = realpathSync(absolutePath);
     const realRelative = path.relative(this.root, realSourcePath);
@@ -311,7 +341,11 @@ export class GitContextIndexer {
       }
       bytes = readFileSync(fd);
       const afterRead = fstatSync(fd);
-      if (afterRead.size !== opened.size || afterRead.mtimeMs !== opened.mtimeMs) {
+      if (
+        afterRead.size !== opened.size ||
+        afterRead.mtimeMs !== opened.mtimeMs ||
+        afterRead.ctimeMs !== opened.ctimeMs
+      ) {
         throw new Error('Source changed while being read.');
       }
       modifiedAt = afterRead.mtime.toISOString();
@@ -322,57 +356,85 @@ export class GitContextIndexer {
     if (source.includes('\u0000') || containsSensitiveText(source)) {
       throw new Error('Source may contain a secret, personal data, or binary data.');
     }
-    return {
-      snapshot: {
-        path: normalized,
-        commit,
-        hash: createHash('sha256').update(bytes).digest('hex'),
-        modifiedAt,
-      },
-      content: source,
-    };
+    const snapshot = {
+      path: normalized,
+      commit,
+      hash: createHash('sha256').update(bytes).digest('hex'),
+      modifiedAt,
+    } satisfies SourceSnapshot;
+    this.snapshotCache.set(normalized, { signature, snapshot });
+    return { snapshot, content: includeContent ? source : '' };
   }
 
   refreshStaleness(
     candidates?: readonly StalenessCandidate[],
     persist = true,
   ): StalenessResult {
-    const commit = this.currentCommit();
+    let commit = 'unknown';
+    try {
+      commit = this.currentCommit();
+    } catch {
+      // A missing Git head makes provenance unavailable, but it must not turn
+      // an unverified record into a fresh one.
+    }
     const references = candidates
       ? candidates.map((candidate) => ({
           id: candidate.id,
           path: candidate.source.path,
-          commit,
           hash: candidate.source.hash,
         }))
       : this.store.activeSourceReferences();
-    const snapshots = new Map<string, SourceSnapshot | null>();
+    const snapshots = new Map<string, { state: FreshnessState; snapshot?: SourceSnapshot }>();
     const staleness = new Map<string, boolean>();
+    let fresh = 0;
     let stale = 0;
+    let unknown = 0;
     const staleIds: string[] = [];
+    const unknownIds: string[] = [];
     for (const reference of references) {
-      let snapshot = snapshots.get(reference.path);
-      if (snapshot === undefined) {
+      let checked = snapshots.get(reference.path);
+      if (checked === undefined) {
         try {
-          snapshot = this.snapshotSourceAtCommit(reference.path, commit);
-        } catch {
-          snapshot = null;
+          checked = commit === 'unknown'
+            ? { state: 'unknown' }
+            : { state: 'fresh', snapshot: this.snapshotSourceFromWorktree(reference.path, commit) };
+        } catch (error) {
+          const code = typeof error === 'object' && error !== null && 'code' in error
+            ? (error as { code?: unknown }).code
+            : undefined;
+          checked = { state: code === 'ENOENT' || code === 'ENOTDIR' ? 'stale' : 'unknown' };
         }
-        snapshots.set(reference.path, snapshot);
+        snapshots.set(reference.path, checked);
       }
-      const isStale = snapshot === null || snapshot.hash !== reference.hash;
-      staleness.set(reference.id, isStale);
-      if (isStale) {
+      let state = checked.state;
+      if (state === 'fresh') {
+        if (!SOURCE_HASH_PATTERN.test(reference.hash)) {
+          state = 'unknown';
+        } else if (checked.snapshot?.hash !== reference.hash) {
+          state = 'stale';
+        }
+      }
+      if (state === 'fresh') {
+        fresh += 1;
+        staleness.set(reference.id, false);
+      } else if (state === 'stale') {
         stale += 1;
         staleIds.push(reference.id);
+        staleness.set(reference.id, true);
+      } else {
+        unknown += 1;
+        unknownIds.push(reference.id);
       }
     }
     return {
       commit,
       checked: references.length,
+      fresh,
       stale,
+      unknown,
       changed: persist ? this.store.setStaleness(staleness) : 0,
       staleIds,
+      unknownIds,
     };
   }
 
@@ -404,7 +466,7 @@ export class GitContextIndexer {
       let snapshot: SourceSnapshot;
       let source: string;
       try {
-        const inspected = this.readSourceAtCommit(sourcePath, commit);
+        const inspected = this.readWorktreeSource(sourcePath, commit);
         snapshot = inspected.snapshot;
         if (!options.full && previousHashes.get(sourcePath) === snapshot.hash) {
           currentPaths.add(sourcePath);

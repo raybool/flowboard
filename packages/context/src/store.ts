@@ -10,6 +10,7 @@ import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 
 export type ContextRecordStatus = 'confirmed' | 'proposed' | 'invalidated';
+export type FreshnessState = 'fresh' | 'stale' | 'unknown';
 export type ContextRecordKind =
   | 'source'
   | 'architecture'
@@ -40,6 +41,7 @@ export interface ContextRecord {
   source: SourceSnapshot;
   status: ContextRecordStatus;
   stale: boolean;
+  freshness: FreshnessState;
   supersedesId: string | null;
   invalidationReason: string | null;
   createdAt: string;
@@ -414,6 +416,7 @@ function rowToRecord(row: RecordRow): ContextRecord {
     },
     status: row.status,
     stale: row.stale === 1,
+    freshness: row.stale === 1 ? 'stale' : 'fresh',
     supersedesId: row.supersedes_id,
     invalidationReason: row.invalidation_reason,
     createdAt: row.created_at,

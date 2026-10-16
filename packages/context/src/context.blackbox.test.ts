@@ -43,6 +43,7 @@ interface ToolRecord {
   summary: string;
   status: string;
   stale: boolean;
+  freshness?: 'fresh' | 'stale' | 'unknown';
   source: { path: string; hash: string };
   supersedesId: string | null;
 }
@@ -62,7 +63,15 @@ interface ToolPayload {
     source_references: string[];
     revision: number;
   } | null;
-  freshness?: { checked: number; stale: number; changed: number };
+  freshness?: {
+    checked: number;
+    fresh: number;
+    stale: number;
+    unknown: number;
+    changed: number;
+    staleIds?: string[];
+    unknownIds?: string[];
+  };
   returnedCount?: number;
   totalCount?: number;
   omittedCount?: number;
@@ -287,6 +296,7 @@ test('MCP contract, FTS, persistence, staleness, incremental update, and safety'
   assert.equal(alpha.source.path, 'src/alpha.ts');
   assert.equal(alpha.status, 'confirmed');
   assert.equal(alpha.stale, false);
+  assert.equal(alpha.freshness, 'fresh');
 
   writeFileSync(
     path.join(fixture.root, 'src', 'alpha.ts'),
@@ -316,6 +326,7 @@ test('MCP contract, FTS, persistence, staleness, incremental update, and safety'
   );
   assert.equal(staleGet.record?.id, alpha.id);
   assert.equal(staleGet.record?.stale, true);
+  assert.equal(staleGet.record?.freshness, 'stale');
 
   const refreshed = cli<{ updated: number }>(fixture, 'update');
   assert.ok(refreshed.updated >= 1);
@@ -601,6 +612,8 @@ test('incremental index creates, updates, and removes nested source files', () =
     'auth.renamed.ts',
   );
   fs.renameSync(authModulePath, renamedModulePath);
+  const renamedFreshness = cli<{ freshness: ToolPayload['freshness'] }>(fixture, 'status');
+  assert.ok((renamedFreshness.freshness?.stale ?? 0) >= 1);
   const renamed = cli<{ created: number; invalidated: number }>(fixture, 'update');
   assert.ok(renamed.created >= 1);
   assert.ok(renamed.invalidated >= 1);
@@ -642,6 +655,80 @@ test('incremental index creates, updates, and removes nested source files', () =
   const deleted = cli<{ invalidated: number }>(fixture, 'update');
   assert.ok(deleted.invalidated >= 1);
   assert.equal(cli<{ count: number }>(fixture, 'search', 'AccessTokenGuardNeedle').count, 0);
+});
+
+test('freshness is worktree-aware for staged, unstaged, deleted, and unverifiable sources', async (t) => {
+  const fixture = createFixture();
+  cli(fixture, 'index');
+
+  const alphaPath = path.join(fixture.root, 'src', 'alpha.ts');
+  const indexed = cli<{ records: ToolRecord[] }>(fixture, 'search', 'AlphaNeedle');
+  const alpha = indexed.records[0];
+  assert.ok(alpha);
+  assert.equal(alpha.source.hash, createHash('sha256').update(readFileSync(alphaPath)).digest('hex'));
+
+  const unchanged = cli<{ freshness: ToolPayload['freshness'] }>(fixture, 'status');
+  assert.equal(unchanged.freshness?.fresh, unchanged.freshness?.checked);
+  assert.equal(unchanged.freshness?.stale, 0);
+  assert.equal(unchanged.freshness?.unknown, 0);
+
+  writeFileSync(alphaPath, 'export function UnstagedNeedle(): string { return "unstaged"; }\n');
+  const unstaged = cli<{ freshness: ToolPayload['freshness'] }>(fixture, 'status');
+  assert.ok((unstaged.freshness?.stale ?? 0) >= 1);
+  assert.equal(unstaged.freshness?.unknown, 0);
+
+  const reindexed = cli<{ updated: number }>(fixture, 'update');
+  assert.ok(reindexed.updated >= 1);
+  const afterUnstaged = cli<{ freshness: ToolPayload['freshness'] }>(fixture, 'status');
+  assert.equal(afterUnstaged.freshness?.stale, 0);
+  assert.equal(afterUnstaged.freshness?.unknown, 0);
+
+  writeFileSync(alphaPath, 'export function StagedNeedle(): string { return "staged"; }\n');
+  git(fixture.root, ['add', 'src/alpha.ts']);
+  const staged = cli<{ freshness: ToolPayload['freshness'] }>(fixture, 'status');
+  assert.ok((staged.freshness?.stale ?? 0) >= 1);
+  assert.equal(staged.freshness?.unknown, 0);
+
+  git(fixture.root, ['commit', '-qm', 'staged content']);
+  const committed = cli<{ updated: number }>(fixture, 'update');
+  assert.ok(committed.updated >= 1);
+  git(fixture.root, ['commit', '--allow-empty', '-qm', 'metadata-only head']);
+  const sameContentNewCommit = cli<{ freshness: ToolPayload['freshness'] }>(fixture, 'status');
+  assert.equal(sameContentNewCommit.freshness?.stale, 0);
+  assert.equal(sameContentNewCommit.freshness?.unknown, 0);
+
+  fs.unlinkSync(alphaPath);
+  const deleted = cli<{ freshness: ToolPayload['freshness'] }>(fixture, 'status');
+  assert.ok((deleted.freshness?.stale ?? 0) >= 1);
+
+  writeFileSync(alphaPath, 'x'.repeat(512 * 1024 + 1));
+  const unreadable = cli<{ freshness: ToolPayload['freshness'] }>(fixture, 'status');
+  assert.ok((unreadable.freshness?.unknown ?? 0) >= 1);
+  assert.equal(unreadable.freshness?.stale, 0);
+
+  const database = new DatabaseSync(fixture.databasePath);
+  try {
+    database.prepare('UPDATE context_records SET source_hash = ? WHERE id = ?').run('0'.repeat(40), alpha.id);
+  } finally {
+    database.close();
+  }
+  writeFileSync(alphaPath, 'export function RestoredNeedle(): string { return "restored"; }\n');
+  const incompatibleHash = cli<{ freshness: ToolPayload['freshness'] }>(fixture, 'status');
+  assert.ok((incompatibleHash.freshness?.unknown ?? 0) >= 1);
+  assert.ok(
+    (incompatibleHash.freshness?.fresh ?? 0) < (incompatibleHash.freshness?.checked ?? 0),
+  );
+
+  const connection = await connectClient(fixture, 'flowboard-freshness-test');
+  t.after(async () => connection.client.close());
+  const unknownRecord = structuredPayload(
+    await connection.client.callTool({
+      name: 'context.get',
+      arguments: { id: alpha.id },
+    }),
+  ).record;
+  assert.equal(unknownRecord?.freshness, 'unknown');
+  assert.equal(unknownRecord?.stale, false);
 });
 
 test('MCP read audit records safe metrics and CLI stats', async (t) => {
