@@ -66,7 +66,10 @@ Every MCP read and `context.update_task_context` call writes an audit row with
 duration, request/response byte counts, success, and (for task updates) revisions
 before and after. Failed validation is classified by a safe error code and
 explicit retry counts are recorded when supplied. Audit rows contain metrics
-only, never the handoff contents.
+only, never the handoff contents. Orchestration integrations can use
+`ContextStore.recordAgentEvent` to record `task_id`, `mode`, `stage`,
+`agent_event`, and `escalation_reason`; these fields are nullable so older rows
+remain compatible.
 
 ## Operating model
 

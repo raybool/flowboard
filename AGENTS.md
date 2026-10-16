@@ -84,6 +84,16 @@ Summarize:
 - Review findings
 - Remaining risks
 
+## Smart Agent Orchestration (FB-003.16)
+
+`packages/orchestration` — единый источник политики. Coordinator перед началом работы получает детерминированный `buildExecutionPlan` (CLI: `pnpm --silent orchestration:plan --task "..."`, JSON: `--json`) и использует его `classification`, `steps`, `handoff`, `recommendedChecks` и `context`. Отдельный классификатор в инструкциях не дублируется.
+
+План не запускает субагентов и не изменяет код. Если его построение недоступно, используется безопасный CRITICAL fallback с targeted-source context и compact-text handoff; причина показывается вызывающей стороне и фиксируется в audit log при наличии workflow-события.
+
+Knowledge-First для каждого scoped stage: ровно один узкий `context.search` с `task_id`, `agent_role` и `limit <= 5`, затем только необходимые исходники. `context.get_task` вызывается лишь для предыдущего handoff. При недоступности MCP выполняется targeted source fallback с явным сообщением `MCP unavailable — repository fallback`; бесконечные повторы запрещены.
+
+Ограничения расходов задаются политикой, а не фиктивным подсчётом токенов. Policy-библиотека строит dry-run план; она не является daemon, не запускает Codex threads и не заменяет approvals runtime. Фактические agent/MCP-события подтверждаются audit stats.
+
 ## Project conventions
 
 - Use pnpm.

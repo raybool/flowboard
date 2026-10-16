@@ -97,7 +97,8 @@ export type AuditToolName =
   | 'context.search'
   | 'context.get'
   | 'context.get_task'
-  | 'context.update_task_context';
+  | 'context.update_task_context'
+  | 'orchestration.event';
 
 export type AuditErrorCode =
   | 'revision_conflict'
@@ -113,6 +114,10 @@ export interface AuditLogInput {
   tool: AuditToolName;
   taskId?: string;
   agentRole?: string;
+  mode?: string;
+  stage?: string;
+  agentEvent?: string;
+  escalationReason?: string;
   requestBytes: number;
   durationMs: number;
   resultCount: number;
@@ -122,6 +127,16 @@ export interface AuditLogInput {
   revisionAfter?: number | null;
   retryCount?: number;
   errorCode?: AuditErrorCode | null;
+}
+
+export interface AgentEventAuditInput {
+  occurredAt?: string;
+  taskId: string;
+  mode: string;
+  stage: string;
+  agentEvent: string;
+  escalationReason?: string;
+  agentRole?: string;
 }
 
 export interface AuditToolStats {
@@ -692,9 +707,13 @@ export class ContextStore {
       CREATE TABLE IF NOT EXISTS context_audit_log (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         occurred_at TEXT NOT NULL,
-        tool TEXT NOT NULL CHECK (tool IN ('context.search', 'context.get', 'context.get_task', 'context.update_task_context')),
+        tool TEXT NOT NULL CHECK (tool IN ('context.search', 'context.get', 'context.get_task', 'context.update_task_context', 'orchestration.event')),
         task_id TEXT,
         agent_role TEXT,
+        mode TEXT,
+        stage TEXT,
+        agent_event TEXT,
+        escalation_reason TEXT,
         request_bytes INTEGER NOT NULL CHECK (request_bytes >= 0),
         duration_ms INTEGER NOT NULL CHECK (duration_ms >= 0),
         result_count INTEGER NOT NULL CHECK (result_count >= 0),
@@ -779,7 +798,11 @@ export class ContextStore {
       columnNames.has('revision_before') &&
       columnNames.has('revision_after') &&
       columnNames.has('retry_count') &&
-      columnNames.has('error_code')
+      columnNames.has('error_code') &&
+      columnNames.has('mode') &&
+      columnNames.has('stage') &&
+      columnNames.has('agent_event') &&
+      columnNames.has('escalation_reason')
     ) {
       return;
     }
@@ -792,9 +815,13 @@ export class ContextStore {
       CREATE TABLE context_audit_log (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         occurred_at TEXT NOT NULL,
-        tool TEXT NOT NULL CHECK (tool IN ('context.search', 'context.get', 'context.get_task', 'context.update_task_context')),
+        tool TEXT NOT NULL CHECK (tool IN ('context.search', 'context.get', 'context.get_task', 'context.update_task_context', 'orchestration.event')),
         task_id TEXT,
         agent_role TEXT,
+        mode TEXT,
+        stage TEXT,
+        agent_event TEXT,
+        escalation_reason TEXT,
         request_bytes INTEGER NOT NULL CHECK (request_bytes >= 0),
         duration_ms INTEGER NOT NULL CHECK (duration_ms >= 0),
         result_count INTEGER NOT NULL CHECK (result_count >= 0),
@@ -806,11 +833,11 @@ export class ContextStore {
         error_code TEXT
       );
       INSERT INTO context_audit_log (
-        id, occurred_at, tool, task_id, agent_role, request_bytes,
+        id, occurred_at, tool, task_id, agent_role, mode, stage, agent_event, escalation_reason, request_bytes,
         duration_ms, result_count, response_bytes, success, revision_before, revision_after,
         retry_count, error_code
       )
-      SELECT id, occurred_at, tool, task_id, agent_role, 0,
+      SELECT id, occurred_at, tool, task_id, agent_role, NULL, NULL, NULL, NULL, 0,
         duration_ms, result_count, response_bytes, success, NULL, NULL, 0, NULL
       FROM context_audit_log_legacy;
       DROP TABLE context_audit_log_legacy;
@@ -1613,19 +1640,28 @@ export class ContextStore {
     const retryCount = Math.max(0, Math.round(input.retryCount ?? 0));
     const taskId = sanitizeAuditContext(input.taskId, 160);
     const agentRole = sanitizeAuditContext(input.agentRole, 80);
+    const mode = sanitizeAuditContext(input.mode, 32);
+    const stage = sanitizeAuditContext(input.stage, 80);
+    const agentEvent = sanitizeAuditContext(input.agentEvent, 160);
+    const escalationReason = sanitizeAuditContext(input.escalationReason, 240);
     this.db
       .prepare(
         `INSERT INTO context_audit_log (
-          occurred_at, tool, task_id, agent_role, request_bytes, duration_ms,
+          occurred_at, tool, task_id, agent_role, mode, stage, agent_event, escalation_reason,
+          request_bytes, duration_ms,
           result_count, response_bytes, success, revision_before, revision_after,
           retry_count, error_code
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         input.occurredAt,
         input.tool,
         taskId,
         agentRole,
+        mode,
+        stage,
+        agentEvent,
+        escalationReason,
         requestBytes,
         durationMs,
         resultCount,
@@ -1636,6 +1672,24 @@ export class ContextStore {
         retryCount,
         input.errorCode ?? null,
       );
+  }
+
+  recordAgentEvent(input: AgentEventAuditInput): void {
+    this.recordAudit({
+      occurredAt: input.occurredAt ?? new Date().toISOString(),
+      tool: 'orchestration.event',
+      taskId: input.taskId,
+      agentRole: input.agentRole,
+      mode: input.mode,
+      stage: input.stage,
+      agentEvent: input.agentEvent,
+      escalationReason: input.escalationReason,
+      requestBytes: 0,
+      durationMs: 0,
+      resultCount: 0,
+      responseBytes: 0,
+      success: true,
+    });
   }
 
   auditStats(options: AuditStatsOptions = {}): AuditStats {
@@ -1694,6 +1748,7 @@ export class ContextStore {
       'context.get',
       'context.get_task',
       'context.update_task_context',
+      'orchestration.event',
     ];
     for (const tool of tools) {
       byTool[tool] = {

@@ -6,7 +6,7 @@ model_reasoning_effort = "high"
 developer_instructions = """
 You are a Principal Software Architect.
 
-Knowledge context: follow the mandatory workflow in the root `AGENTS.md`; begin with one narrow `context.search` using `limit = 5`, pass the task ID and `agent_role = "architect"`, reuse only current confirmed records, and re-read exact files plus `git diff` before any edit. Do not repeat identical searches or call `context.get_task` without a needed handoff snapshot.
+Read and follow the repository `AGENTS.md` orchestration and Knowledge-First policy. For the architect stage use one narrow `context.search` with `limit = 5` and `agent_role = "architect"`; call `context.get_task` only when a prior handoff is required. Re-read exact files and `git diff` before any edit, and do not repeat identical searches.
 
 Project stack:
 - TypeScript

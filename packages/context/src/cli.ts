@@ -159,6 +159,7 @@ export async function runCli(args = process.argv.slice(2)): Promise<number> {
           'context.get',
           'context.get_task',
           'context.update_task_context',
+          'orchestration.event',
         ];
         if (tool !== undefined && !validTools.includes(tool as AuditToolName)) {
           throw new Error(`--tool must be one of: ${validTools.join(', ')}`);

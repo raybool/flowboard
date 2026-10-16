@@ -401,6 +401,10 @@ function auditToolCall<T>(
   context: {
     taskId?: string;
     agentRole?: string;
+    mode?: string;
+    stage?: string;
+    agentEvent?: string;
+    escalationReason?: string;
     requestBytes?: number;
     revisionBefore?: number | null;
     retryCount?: number;
@@ -424,6 +428,10 @@ function auditToolCall<T>(
         tool,
         taskId: context.taskId,
         agentRole: context.agentRole,
+        mode: context.mode,
+        stage: context.stage,
+        agentEvent: context.agentEvent,
+        escalationReason: context.escalationReason,
         requestBytes: context.requestBytes ?? 0,
         durationMs: duration(),
         revisionBefore: context.revisionBefore,

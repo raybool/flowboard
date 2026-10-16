@@ -16,6 +16,7 @@
     "context:index": "pnpm context index",
     "context:update": "pnpm context update",
     "context:status": "pnpm context status",
+    "orchestration:plan": "pnpm --silent --filter @flowboard/orchestration plan",
     "db:up": "docker compose up -d",
     "db:down": "docker compose down",
     "db:logs": "docker compose logs -f postgres",

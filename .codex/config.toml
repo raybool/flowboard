@@ -5,7 +5,9 @@ mcp_optional_startup_grace_ms = 0
 
 [agents]
 enabled = true
-max_concurrent_threads_per_session = 6
+# The policy uses at most Architect, Developer, Reviewer and QA for CRITICAL.
+# FAST/STANDARD limits are enforced by the coordinator workflow instructions.
+max_concurrent_threads_per_session = 4
 default_subagent_reasoning_effort = "medium"
 
 [mcp_servers.flowboard_context]
@@ -16,3 +18,6 @@ enabled = true
 startup_timeout_sec = 15
 tool_timeout_sec = 20
 enabled_tools = ["context.search", "context.get", "context.save", "context.update", "context.get_task", "context.update_task_context", "context.invalidate"]
+
+[mcp_servers.flowboard_context.tools."context.update_task_context"]
+approval_mode = "approve"
