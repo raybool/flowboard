@@ -4,19 +4,22 @@ import { DatabaseModule } from './database/database.module';
 import { envSchema } from './config/env.schema';
 import { AuthModule } from './modules/auth/auth.module';
 import { WorkspacesModule } from './modules/workspaces/workspaces.module.js';
+import { ProjectsModule } from './modules/projects/projects.module.js';
+import { TasksModule } from './modules/tasks/tasks.module.js';
 
 @Module({
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
-      envFilePath: ".env",
-       validate: (config) => envSchema.parse(config),
+      envFilePath: '.env',
+      validate: (config) => envSchema.parse(config),
     }),
 
     DatabaseModule,
     AuthModule,
     WorkspacesModule,
+    ProjectsModule,
+    TasksModule,
   ],
 })
 export class AppModule {}
-

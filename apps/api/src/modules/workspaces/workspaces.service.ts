@@ -299,6 +299,14 @@ export class WorkspacesService {
           throw new ForbiddenException('Only owner can remove admins');
         }
 
+        await transaction.task.updateMany({
+          where: {
+            workspaceId,
+            assigneeMemberId: target.id,
+          },
+          data: { assigneeMemberId: null },
+        });
+
         await transaction.workspaceMember.delete({
           where: { id: target.id },
         });

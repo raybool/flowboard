@@ -20,6 +20,7 @@ model User {
 
   sessions     Session[]
   workspaceMemberships WorkspaceMember[]
+  createdTasks  Task[]
 
   createdAt    DateTime  @default(now()) @map("created_at")
   updatedAt    DateTime  @updatedAt @map("updated_at")
@@ -67,6 +68,8 @@ model Workspace {
   slug      String   @unique
 
   members   WorkspaceMember[]
+  projects  Project[]
+  tasks     Task[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -83,10 +86,81 @@ model WorkspaceMember {
   workspace Workspace @relation( fields: [workspaceId], references: [id], onDelete: Cascade )
 
   user User @relation( fields: [userId], references: [id], onDelete: Cascade )
+  assignedTasks Task[]
 
   joinedAt DateTime @default(now())
 
   @@unique([workspaceId, userId])
+  @@unique([workspaceId, id])
   @@index([userId])
   @@map("workspace_members")
+}
+
+model Project {
+  id               String    @id @default(uuid())
+  workspaceId      String
+  name             String
+  key              String
+  description      String?
+  nextTaskSequence Int       @default(1)
+  archivedAt       DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  tasks     Task[]
+
+  @@unique([workspaceId, key])
+  @@unique([workspaceId, id])
+  @@index([workspaceId])
+  @@index([workspaceId, archivedAt])
+  @@map("projects")
+}
+
+enum TaskStatus {
+  BACKLOG
+  TODO
+  IN_PROGRESS
+  DONE
+  CANCELED
+}
+
+enum TaskPriority {
+  NONE
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+model Task {
+  id               String       @id @default(uuid())
+  workspaceId      String
+  projectId        String
+  sequence         Int
+  title            String
+  description      String?
+  status           TaskStatus   @default(BACKLOG)
+  priority         TaskPriority @default(NONE)
+  creatorId        String
+  assigneeMemberId String?
+  archivedAt       DateTime?
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+
+  workspace     Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project       Project        @relation(fields: [workspaceId, projectId], references: [workspaceId, id], onDelete: Cascade)
+  creator       User           @relation(fields: [creatorId], references: [id], onDelete: Restrict)
+  assigneeMember WorkspaceMember? @relation(fields: [workspaceId, assigneeMemberId], references: [workspaceId, id], onDelete: Restrict)
+
+  @@unique([projectId, sequence])
+  @@index([workspaceId])
+  @@index([workspaceId, projectId])
+  @@index([projectId, status])
+  @@index([workspaceId, status])
+  @@index([assigneeMemberId])
+  @@index([workspaceId, assigneeMemberId])
+  @@index([projectId, createdAt, id])
+  @@index([workspaceId, createdAt, id])
+  @@map("tasks")
 }

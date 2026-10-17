@@ -14,7 +14,7 @@ vi.mock('node:crypto', async (importOriginal) => {
 
 const databaseUrl = process.env.TEST_DATABASE_URL;
 
-describe.runIf(Boolean(databaseUrl))('Auth PostgreSQL rollback', () => {
+describe('Auth PostgreSQL rollback', () => {
   let prisma: PrismaClient;
   let service: AuthService;
   const createdUserIds: string[] = [];

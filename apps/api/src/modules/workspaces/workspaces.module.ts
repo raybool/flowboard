@@ -12,6 +12,6 @@ import { WorkspaceRolesGuard } from './guards/workspace-roles.guard';
   imports: [AuthModule, DatabaseModule],
   controllers: [WorkspacesController],
   providers: [WorkspacesService, WorkspaceMembersService, WorkspaceRolesGuard],
-  exports: [WorkspacesService, WorkspaceMembersService],
+  exports: [WorkspacesService, WorkspaceMembersService, WorkspaceRolesGuard],
 })
 export class WorkspacesModule {}

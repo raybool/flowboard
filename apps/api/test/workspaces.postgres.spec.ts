@@ -20,7 +20,7 @@ import { WorkspacesService } from '../src/modules/workspaces/workspaces.service'
 
 const databaseUrl = process.env.TEST_DATABASE_URL;
 
-describe.runIf(Boolean(databaseUrl))(
+describe(
   'Workspace RBAC PostgreSQL security',
   () => {
     let prisma: PrismaClient;

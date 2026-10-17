@@ -15,12 +15,14 @@ describe('WorkspacesService authorization defense-in-depth', () => {
   const requireRole = vi.fn();
   const findFirst = vi.fn();
   const update = vi.fn();
+  const memberDelete = vi.fn();
+  const taskUpdateMany = vi.fn();
   const workspaceFindFirst = vi.fn();
   const workspaceUpdate = vi.fn();
   const transaction = vi.fn();
   const service = new WorkspacesService(
     {
-      workspaceMember: { findFirst, update },
+      workspaceMember: { findFirst, update, delete: memberDelete },
       workspace: { findFirst: workspaceFindFirst, update: workspaceUpdate },
       $transaction: transaction,
     } as unknown as PrismaService,
@@ -34,8 +36,9 @@ describe('WorkspacesService authorization defense-in-depth', () => {
     vi.resetAllMocks();
     transaction.mockImplementation(async (callback) =>
       callback({
-        workspaceMember: { findFirst, update },
+        workspaceMember: { findFirst, update, delete: memberDelete },
         workspace: { update: workspaceUpdate },
+        task: { updateMany: taskUpdateMany },
       }),
     );
   });
@@ -143,5 +146,40 @@ describe('WorkspacesService authorization defense-in-depth', () => {
       service.update('workspace-id', 'user-id', { name: 'Renamed workspace' }),
     ).rejects.toBeInstanceOf(ServiceUnavailableException);
     expect(transaction).toHaveBeenCalledTimes(3);
+  });
+
+  it('clears task assignments before deleting a member in one transaction', async () => {
+    requireRole.mockResolvedValue({ role: WorkspaceRole.OWNER });
+    findFirst.mockResolvedValue({
+      id: 'member-id',
+      workspaceId: 'workspace-id',
+      role: WorkspaceRole.MEMBER,
+    });
+
+    await expect(
+      service.removeMember('workspace-id', 'owner-id', 'member-id'),
+    ).resolves.toBeUndefined();
+
+    expect(taskUpdateMany).toHaveBeenCalledWith({
+      where: { workspaceId: 'workspace-id', assigneeMemberId: 'member-id' },
+      data: { assigneeMemberId: null },
+    });
+    expect(memberDelete).toHaveBeenCalledWith({ where: { id: 'member-id' } });
+  });
+
+  it('does not delete a member when assignment cleanup fails', async () => {
+    requireRole.mockResolvedValue({ role: WorkspaceRole.OWNER });
+    findFirst.mockResolvedValue({
+      id: 'member-id',
+      workspaceId: 'workspace-id',
+      role: WorkspaceRole.MEMBER,
+    });
+    const error = new Error('database unavailable');
+    taskUpdateMany.mockRejectedValue(error);
+
+    await expect(
+      service.removeMember('workspace-id', 'owner-id', 'member-id'),
+    ).rejects.toBe(error);
+    expect(memberDelete).not.toHaveBeenCalled();
   });
 });
