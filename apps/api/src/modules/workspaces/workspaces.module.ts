@@ -5,14 +5,13 @@ import { DatabaseModule } from '../../database/database.module';
 
 import { WorkspacesController } from './workspaces.controller';
 import { WorkspacesService } from './workspaces.service';
+import { WorkspaceMembersService } from './workspace-members.service';
+import { WorkspaceRolesGuard } from './guards/workspace-roles.guard';
 
 @Module({
-  imports: [
-    AuthModule,
-    DatabaseModule,
-  ],
+  imports: [AuthModule, DatabaseModule],
   controllers: [WorkspacesController],
-  providers: [WorkspacesService],
-  exports: [WorkspacesService],
+  providers: [WorkspacesService, WorkspaceMembersService, WorkspaceRolesGuard],
+  exports: [WorkspacesService, WorkspaceMembersService],
 })
 export class WorkspacesModule {}

@@ -5,18 +5,19 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 
-import {
-  Prisma,
-  WorkspaceRole,
-} from '../../generated/prisma/client';
+import { Prisma, WorkspaceRole } from '../../generated/prisma/client';
 
 import { PrismaService } from '../../database/prisma.service';
+import { runSerializableTransaction } from '../../database/serializable-transaction';
+import type { EnvConfig } from '../../config/env.schema';
 
 import { CreateWorkspaceDto } from './dto/create-workspace.dto';
 import { UpdateWorkspaceDto } from './dto/update-workspace.dto';
 import { AddMemberDto } from './dto/add-member.dto';
 import { UpdateMemberRoleDto } from './dto/update-member-role.dto';
+import { WorkspaceMembersService } from './workspace-members.service';
 
 const memberSelect = {
   id: true,
@@ -33,44 +34,18 @@ const memberSelect = {
 
 @Injectable()
 export class WorkspacesService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly workspaceMembersService: WorkspaceMembersService,
+    private readonly config?: ConfigService<EnvConfig, true>,
+  ) {}
 
-  private async getMembership(
-    workspaceId: string,
-    userId: string,
-  ) {
-    const membership =
-      await this.prisma.workspaceMember.findUnique({
-        where: {
-          workspaceId_userId: {
-            workspaceId,
-            userId,
-          },
-        },
-      });
-
-    if (!membership) {
-      throw new NotFoundException('Workspace not found');
-    }
-
-    return membership;
-  }
-
-  private async requireRole(
-    workspaceId: string,
-    userId: string,
-    allowedRoles: WorkspaceRole[],
-  ) {
-    const membership = await this.getMembership(
-      workspaceId,
-      userId,
+  private get transactionMaxAttempts(): number {
+    return (
+      this.config?.get('WORKSPACE_TRANSACTION_MAX_ATTEMPTS', {
+        infer: true,
+      }) ?? 3
     );
-
-    if (!allowedRoles.includes(membership.role)) {
-      throw new ForbiddenException('Insufficient permissions');
-    }
-
-    return membership;
   }
 
   async create(userId: string, dto: CreateWorkspaceDto) {
@@ -93,9 +68,7 @@ export class WorkspacesService {
         error instanceof Prisma.PrismaClientKnownRequestError &&
         error.code === 'P2002'
       ) {
-        throw new ConflictException(
-          'Workspace slug already exists',
-        );
+        throw new ConflictException('Workspace slug already exists');
       }
 
       throw error;
@@ -125,10 +98,11 @@ export class WorkspacesService {
   }
 
   async findOne(workspaceId: string, userId: string) {
-    await this.getMembership(workspaceId, userId);
-
-    const workspace = await this.prisma.workspace.findUnique({
-      where: { id: workspaceId },
+    const workspace = await this.prisma.workspace.findFirst({
+      where: {
+        id: workspaceId,
+        members: { some: { userId } },
+      },
       include: {
         _count: {
           select: { members: true },
@@ -143,90 +117,102 @@ export class WorkspacesService {
     return workspace;
   }
 
-  async update(
-    workspaceId: string,
-    userId: string,
-    dto: UpdateWorkspaceDto,
-  ) {
-    await this.requireRole(workspaceId, userId, [
-      WorkspaceRole.OWNER,
-      WorkspaceRole.ADMIN,
-    ]);
+  async update(workspaceId: string, userId: string, dto: UpdateWorkspaceDto) {
+    return runSerializableTransaction(
+      this.prisma,
+      async (transaction) => {
+        await this.workspaceMembersService.requireRole(
+          workspaceId,
+          userId,
+          [WorkspaceRole.OWNER, WorkspaceRole.ADMIN],
+          transaction.workspaceMember,
+        );
 
-    return this.prisma.workspace.update({
-      where: { id: workspaceId },
-      data: { name: dto.name.trim() },
-    });
+        return transaction.workspace.update({
+          where: { id: workspaceId },
+          data: { name: dto.name.trim() },
+        });
+      },
+      this.transactionMaxAttempts,
+    );
   }
 
   async getMembers(workspaceId: string, userId: string) {
-    await this.getMembership(workspaceId, userId);
-
-    return this.prisma.workspaceMember.findMany({
-      where: { workspaceId },
-      select: memberSelect,
-      orderBy: { joinedAt: 'asc' },
+    const workspace = await this.prisma.workspace.findFirst({
+      where: {
+        id: workspaceId,
+        members: { some: { userId } },
+      },
+      select: {
+        members: {
+          select: memberSelect,
+          orderBy: { joinedAt: 'asc' },
+        },
+      },
     });
+
+    if (!workspace) {
+      throw new NotFoundException('Workspace not found');
+    }
+
+    return workspace.members;
   }
 
-  async addMember(
-    workspaceId: string,
-    actorId: string,
-    dto: AddMemberDto,
-  ) {
-    const actor = await this.requireRole(
-      workspaceId,
-      actorId,
-      [WorkspaceRole.OWNER, WorkspaceRole.ADMIN],
-    );
-
-    if (dto.role === WorkspaceRole.OWNER) {
-      throw new BadRequestException(
-        'Cannot assign OWNER role',
-      );
-    }
-
-    if (
-      dto.role === WorkspaceRole.ADMIN &&
-      actor.role !== WorkspaceRole.OWNER
-    ) {
-      throw new ForbiddenException(
-        'Only owner can assign admins',
-      );
-    }
-
-    const user = await this.prisma.user.findUnique({
-      where: {
-        email: dto.email.trim().toLowerCase(),
-      },
-      select: { id: true },
-    });
-
-    if (!user) {
-      throw new NotFoundException('User not found');
-    }
-
-    try {
-      return await this.prisma.workspaceMember.create({
-        data: {
+  async addMember(workspaceId: string, actorId: string, dto: AddMemberDto) {
+    return runSerializableTransaction(
+      this.prisma,
+      async (transaction) => {
+        const actor = await this.workspaceMembersService.requireRole(
           workspaceId,
-          userId: user.id,
-          role: dto.role,
-        },
-        select: memberSelect,
-      });
-    } catch (error) {
-      if (
-        error instanceof Prisma.PrismaClientKnownRequestError &&
-        error.code === 'P2002'
-      ) {
-        throw new ConflictException(
-          'User is already a workspace member',
+          actorId,
+          [WorkspaceRole.OWNER, WorkspaceRole.ADMIN],
+          transaction.workspaceMember,
         );
-      }
 
-      throw error;
-    }
+        if (dto.role === WorkspaceRole.OWNER) {
+          throw new BadRequestException('Cannot assign OWNER role');
+        }
+
+        if (
+          dto.role === WorkspaceRole.ADMIN &&
+          actor.role !== WorkspaceRole.OWNER
+        ) {
+          throw new ForbiddenException('Only owner can assign admins');
+        }
+
+        const user = await transaction.user.findUnique({
+          where: {
+            email: dto.email.trim().toLowerCase(),
+          },
+          select: { id: true },
+        });
+
+        if (!user) {
+          throw new NotFoundException('User not found');
+        }
+
+        try {
+          return await transaction.workspaceMember.create({
+            data: {
+              workspaceId,
+              userId: user.id,
+              role: dto.role,
+            },
+            select: memberSelect,
+          });
+        } catch (error) {
+          if (
+            error instanceof Prisma.PrismaClientKnownRequestError &&
+            error.code === 'P2002'
+          ) {
+            throw new ConflictException('User is already a workspace member');
+          }
+
+          throw error;
+        }
+      },
+      this.transactionMaxAttempts,
+    );
   }
 
   async updateMemberRole(
@@ -235,38 +221,45 @@ export class WorkspacesService {
     memberId: string,
     dto: UpdateMemberRoleDto,
   ) {
-    await this.requireRole(workspaceId, actorId, [
-      WorkspaceRole.OWNER,
-    ]);
+    return runSerializableTransaction(
+      this.prisma,
+      async (transaction) => {
+        await this.workspaceMembersService.requireRole(
+          workspaceId,
+          actorId,
+          [WorkspaceRole.OWNER],
+          transaction.workspaceMember,
+        );
 
-    if (dto.role === WorkspaceRole.OWNER) {
-      throw new BadRequestException(
-        'Use ownership transfer to assign OWNER',
-      );
-    }
+        if (dto.role === WorkspaceRole.OWNER) {
+          throw new BadRequestException(
+            'Use ownership transfer to assign OWNER',
+          );
+        }
 
-    const target = await this.prisma.workspaceMember.findFirst({
-      where: {
-        id: memberId,
-        workspaceId,
+        const target = await transaction.workspaceMember.findFirst({
+          where: {
+            id: memberId,
+            workspaceId,
+          },
+        });
+
+        if (!target) {
+          throw new NotFoundException('Member not found');
+        }
+
+        if (target.role === WorkspaceRole.OWNER) {
+          throw new ForbiddenException('Cannot change owner role');
+        }
+
+        return transaction.workspaceMember.update({
+          where: { id: target.id },
+          data: { role: dto.role },
+          select: memberSelect,
+        });
       },
-    });
-
-    if (!target) {
-      throw new NotFoundException('Member not found');
-    }
-
-    if (target.role === WorkspaceRole.OWNER) {
-      throw new ForbiddenException(
-        'Cannot change owner role',
-      );
-    }
-
-    return this.prisma.workspaceMember.update({
-      where: { id: target.id },
-      data: { role: dto.role },
-      select: memberSelect,
-    });
+      this.transactionMaxAttempts,
+    );
   }
 
   async removeMember(
@@ -274,40 +267,43 @@ export class WorkspacesService {
     actorId: string,
     memberId: string,
   ): Promise<void> {
-    const actor = await this.requireRole(
-      workspaceId,
-      actorId,
-      [WorkspaceRole.OWNER, WorkspaceRole.ADMIN],
-    );
+    await runSerializableTransaction(
+      this.prisma,
+      async (transaction) => {
+        const actor = await this.workspaceMembersService.requireRole(
+          workspaceId,
+          actorId,
+          [WorkspaceRole.OWNER, WorkspaceRole.ADMIN],
+          transaction.workspaceMember,
+        );
 
-    const target = await this.prisma.workspaceMember.findFirst({
-      where: {
-        id: memberId,
-        workspaceId,
+        const target = await transaction.workspaceMember.findFirst({
+          where: {
+            id: memberId,
+            workspaceId,
+          },
+        });
+
+        if (!target) {
+          throw new NotFoundException('Member not found');
+        }
+
+        if (target.role === WorkspaceRole.OWNER) {
+          throw new ForbiddenException('Cannot remove workspace owner');
+        }
+
+        if (
+          target.role === WorkspaceRole.ADMIN &&
+          actor.role !== WorkspaceRole.OWNER
+        ) {
+          throw new ForbiddenException('Only owner can remove admins');
+        }
+
+        await transaction.workspaceMember.delete({
+          where: { id: target.id },
+        });
       },
-    });
-
-    if (!target) {
-      throw new NotFoundException('Member not found');
-    }
-
-    if (target.role === WorkspaceRole.OWNER) {
-      throw new ForbiddenException(
-        'Cannot remove workspace owner',
-      );
-    }
-
-    if (
-      target.role === WorkspaceRole.ADMIN &&
-      actor.role !== WorkspaceRole.OWNER
-    ) {
-      throw new ForbiddenException(
-        'Only owner can remove admins',
-      );
-    }
-
-    await this.prisma.workspaceMember.delete({
-      where: { id: target.id },
-    });
+      this.transactionMaxAttempts,
+    );
   }
 }

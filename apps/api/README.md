@@ -54,11 +54,14 @@ $ pnpm run start:prod
 # unit tests
 $ pnpm run test
 
+# mandatory PostgreSQL security integration tests
+$ TEST_DATABASE_URL=postgresql://.../flowboard_test pnpm run test:postgres
+
 # e2e tests
 $ pnpm run test:e2e
 
-# optional PostgreSQL rollback tests; requires a pre-migrated local *_test database
-$ TEST_DATABASE_URL=postgresql://.../flowboard_test pnpm run test -- test/auth.postgres.spec.ts
+# PostgreSQL integration tests require a pre-migrated local *_test database;
+# the command fails when TEST_DATABASE_URL is absent
 
 # test coverage
 $ pnpm run test:cov

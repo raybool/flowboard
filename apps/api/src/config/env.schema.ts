@@ -7,9 +7,7 @@ export const envSchema = z.object({
 
   PORT: z.coerce.number().int().min(1).max(65535).default(4000),
 
-  DATABASE_URL: z
-    .string()
-    .min(1, 'DATABASE_URL is required'),
+  DATABASE_URL: z.string().min(1, 'DATABASE_URL is required'),
 
   FRONTEND_URL: z.url().default('http://localhost:3000'),
 
@@ -35,6 +33,13 @@ export const envSchema = z.object({
     .pipe(z.number().int().positive().safe()),
 
   TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(10).default(0),
+
+  WORKSPACE_TRANSACTION_MAX_ATTEMPTS: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(5)
+    .default(3),
 });
 
 export type EnvConfig = z.infer<typeof envSchema>;

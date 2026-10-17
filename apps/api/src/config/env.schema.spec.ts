@@ -12,17 +12,32 @@ describe('JWT expiration configuration', () => {
     ['2h', 7200],
     ['1d', 86400],
   ])('converts %s into seconds', (input, seconds) => {
-    expect(envSchema.parse({ ...base, JWT_ACCESS_EXPIRES_IN: input })
-      .JWT_ACCESS_EXPIRES_IN).toBe(seconds);
+    expect(
+      envSchema.parse({ ...base, JWT_ACCESS_EXPIRES_IN: input })
+        .JWT_ACCESS_EXPIRES_IN,
+    ).toBe(seconds);
   });
 
-  it.each(['15', '0s', '15ms', '999999999999999999999d'])
-    ('rejects ambiguous or unsafe durations: %s', (input) => {
-      expect(() => envSchema.parse({ ...base, JWT_ACCESS_EXPIRES_IN: input }))
-        .toThrow();
-    });
+  it.each(['15', '0s', '15ms', '999999999999999999999d'])(
+    'rejects ambiguous or unsafe durations: %s',
+    (input) => {
+      expect(() =>
+        envSchema.parse({ ...base, JWT_ACCESS_EXPIRES_IN: input }),
+      ).toThrow();
+    },
+  );
 
   it('does not trust proxies unless explicitly configured', () => {
     expect(envSchema.parse(base).TRUST_PROXY_HOPS).toBe(0);
+  });
+
+  it('uses a bounded default for workspace transaction retries', () => {
+    expect(envSchema.parse(base).WORKSPACE_TRANSACTION_MAX_ATTEMPTS).toBe(3);
+    expect(() =>
+      envSchema.parse({
+        ...base,
+        WORKSPACE_TRANSACTION_MAX_ATTEMPTS: 6,
+      }),
+    ).toThrow();
   });
 });
