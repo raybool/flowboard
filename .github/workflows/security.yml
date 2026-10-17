@@ -44,15 +44,38 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Run test database guard regression tests
+        run: pnpm --filter api test:database-helper
+
       - name: Generate Prisma client
         run: pnpm --filter api db:generate
 
+      - name: Check isolated test database connection
+        env:
+          TEST_DATABASE_URL: postgresql://flowboard:flowboard_ci_password@localhost:5432/flowboard_test
+        run: pnpm --filter api db:test:check
+
       - name: Apply Prisma migrations to isolated test database
         env:
-          DATABASE_URL: postgresql://flowboard:flowboard_ci_password@localhost:5432/flowboard_test
+          TEST_DATABASE_URL: postgresql://flowboard:flowboard_ci_password@localhost:5432/flowboard_test
         run: pnpm --filter api db:deploy
+
+      - name: Check Prisma migration status
+        env:
+          TEST_DATABASE_URL: postgresql://flowboard:flowboard_ci_password@localhost:5432/flowboard_test
+        run: pnpm --filter api db:test:status
 
       - name: Run mandatory PostgreSQL security suite
         env:
           TEST_DATABASE_URL: postgresql://flowboard:flowboard_ci_password@localhost:5432/flowboard_test
         run: pnpm --filter api test:postgres
+
+      - name: Run mandatory Collaboration HTTP E2E
+        env:
+          TEST_DATABASE_URL: postgresql://flowboard:flowboard_ci_password@localhost:5432/flowboard_test
+        run: pnpm --filter api test:postgres:http
+
+      - name: Run mandatory Auth HTTP E2E
+        env:
+          TEST_DATABASE_URL: postgresql://flowboard:flowboard_ci_password@localhost:5432/flowboard_test
+        run: pnpm --filter api test:e2e

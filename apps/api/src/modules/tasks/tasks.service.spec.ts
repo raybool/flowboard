@@ -24,8 +24,10 @@ describe('TasksService', () => {
   const taskCreate = vi.fn();
   const taskFindFirst = vi.fn();
   const taskFindMany = vi.fn();
+  const labelFindMany = vi.fn();
   const taskUpdate = vi.fn();
   const assigneeFindUnique = vi.fn();
+  const activityWrite = vi.fn();
   const transaction = vi.fn();
   const transactionClient = {
     workspaceMember: { findUnique: assigneeFindUnique },
@@ -35,10 +37,12 @@ describe('TasksService', () => {
   const service = new TasksService(
     {
       project: { findFirst: projectFindFirst },
+      label: { findMany: labelFindMany },
       task: { findMany: taskFindMany, findFirst: taskFindFirst },
       $transaction: transaction,
     } as unknown as PrismaService,
     { requireMembership, requireRole } as unknown as WorkspaceMembersService,
+    { write: activityWrite } as never,
   );
 
   const workspaceId = '11111111-1111-4111-8111-111111111111';
@@ -87,6 +91,111 @@ describe('TasksService', () => {
       assigneeMemberId: null,
       archivedAt: null,
     });
+    labelFindMany.mockResolvedValue([]);
+  });
+
+  it('writes task creation and status activity in the business transaction', async () => {
+    await service.create(workspaceId, projectId, userId, dto);
+
+    expect(activityWrite).toHaveBeenCalledWith(
+      transactionClient,
+      expect.objectContaining({
+        workspaceId,
+        taskId,
+        actorId: userId,
+        type: 'TASK_CREATED',
+        payload: expect.objectContaining({
+          schemaVersion: 1,
+          entity: 'task',
+        }),
+      }),
+    );
+
+    activityWrite.mockClear();
+    taskFindFirst.mockResolvedValue({
+      id: taskId,
+      sequence: 1,
+      status: TaskStatus.TODO,
+      creatorId: userId,
+      archivedAt: null,
+      assigneeMember: null,
+      project: { key: 'FLOW', archivedAt: null },
+    });
+    taskUpdate.mockResolvedValue({ id: taskId, sequence: 1 });
+
+    await service.updateStatus(workspaceId, projectId, taskId, userId, {
+      status: TaskStatus.DONE,
+    });
+
+    expect(activityWrite).toHaveBeenCalledWith(
+      transactionClient,
+      expect.objectContaining({
+        type: 'TASK_STATUS_CHANGED',
+        payload: expect.objectContaining({
+          changes: { status: { from: TaskStatus.TODO, to: TaskStatus.DONE } },
+        }),
+      }),
+    );
+  });
+
+  it('does not write activity for a no-op task update', async () => {
+    taskFindFirst.mockResolvedValue({
+      id: taskId,
+      sequence: 1,
+      title: 'Same title',
+      description: null,
+      priority: TaskPriority.NONE,
+      creatorId: userId,
+      archivedAt: null,
+      assigneeMember: null,
+      project: { key: 'FLOW', archivedAt: null },
+    });
+    taskUpdate.mockResolvedValue({ id: taskId, sequence: 1 });
+
+    await service.update(workspaceId, projectId, taskId, userId, {
+      title: 'Same title',
+    });
+
+    expect(activityWrite).not.toHaveBeenCalled();
+  });
+
+  it('records description changes without copying description content', async () => {
+    const previousDescription = 'previous task description secret';
+    const nextDescription = 'next task description secret';
+    taskFindFirst.mockResolvedValue({
+      id: taskId,
+      sequence: 1,
+      title: 'Same title',
+      description: previousDescription,
+      priority: TaskPriority.NONE,
+      creatorId: userId,
+      archivedAt: null,
+      assigneeMember: null,
+      project: { key: 'FLOW', archivedAt: null },
+    });
+    taskUpdate.mockResolvedValue({
+      id: taskId,
+      sequence: 1,
+      description: nextDescription,
+    });
+
+    await service.update(workspaceId, projectId, taskId, userId, {
+      description: nextDescription,
+    });
+
+    expect(activityWrite).toHaveBeenCalledWith(
+      transactionClient,
+      expect.objectContaining({
+        type: 'TASK_UPDATED',
+        payload: expect.objectContaining({
+          changes: { descriptionChanged: true },
+        }),
+      }),
+    );
+    const payload = activityWrite.mock.calls[0][1].payload;
+    expect(JSON.stringify(payload)).not.toContain(previousDescription);
+    expect(JSON.stringify(payload)).not.toContain(nextDescription);
+    expect(payload).not.toHaveProperty('changes.description');
   });
 
   it.each([WorkspaceRole.OWNER, WorkspaceRole.ADMIN, WorkspaceRole.MEMBER])(
@@ -268,6 +377,42 @@ describe('TasksService', () => {
       }),
     ).rejects.toEqual(new BadRequestException('Invalid cursor'));
     expect(taskFindMany).not.toHaveBeenCalled();
+  });
+
+  it('filters tasks by every requested workspace label without changing pagination', async () => {
+    const firstLabelId = '66666666-6666-4666-8666-666666666666';
+    const secondLabelId = '77777777-7777-4777-8777-777777777777';
+    labelFindMany.mockResolvedValue([
+      { id: firstLabelId },
+      { id: secondLabelId },
+    ]);
+    taskFindMany.mockResolvedValue([]);
+
+    await expect(
+      service.findAll(workspaceId, projectId, userId, {
+        labelIds: [firstLabelId, secondLabelId],
+        limit: 10,
+      }),
+    ).resolves.toEqual({ items: [], nextCursor: null });
+
+    expect(labelFindMany).toHaveBeenCalledWith({
+      where: {
+        workspaceId,
+        id: { in: [firstLabelId, secondLabelId] },
+      },
+      select: { id: true },
+    });
+    expect(taskFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          AND: [
+            { labels: { some: { workspaceId, labelId: firstLabelId } } },
+            { labels: { some: { workspaceId, labelId: secondLabelId } } },
+          ],
+        }),
+        take: 11,
+      }),
+    );
   });
 
   it('enforces member ownership or assignment and preserves protected fields', async () => {

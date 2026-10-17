@@ -109,6 +109,10 @@ describe('Tasks DTO validation', () => {
           status: TaskStatus.DONE,
           priority: TaskPriority.HIGH,
           assigneeId: '11111111-1111-4111-8111-111111111111',
+          labelIds: [
+            '22222222-2222-4222-8222-222222222222',
+            '33333333-3333-4333-8333-333333333333',
+          ],
           includeArchived: 'true',
           limit: '100',
           cursor: 'opaque',
@@ -119,6 +123,10 @@ describe('Tasks DTO validation', () => {
       status: TaskStatus.DONE,
       priority: TaskPriority.HIGH,
       assigneeId: '11111111-1111-4111-8111-111111111111',
+      labelIds: [
+        '22222222-2222-4222-8222-222222222222',
+        '33333333-3333-4333-8333-333333333333',
+      ],
       includeArchived: true,
       limit: 100,
       cursor: 'opaque',
@@ -128,6 +136,13 @@ describe('Tasks DTO validation', () => {
       { status: 'UNKNOWN' },
       { priority: 'UNKNOWN' },
       { assigneeId: 'not-a-uuid' },
+      { labelIds: ['not-a-uuid'] },
+      {
+        labelIds: Array.from(
+          { length: 21 },
+          () => '11111111-1111-4111-8111-111111111111',
+        ),
+      },
       { includeArchived: 'not-a-boolean' },
       { limit: '101' },
       { unexpected: 'value' },

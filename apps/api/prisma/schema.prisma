@@ -21,6 +21,9 @@ model User {
   sessions     Session[]
   workspaceMemberships WorkspaceMember[]
   createdTasks  Task[]
+  taskCommentAuthors TaskComment[] @relation("TaskCommentAuthor")
+  taskCommentDeletions TaskComment[] @relation("TaskCommentDeletedBy")
+  taskActivities TaskActivity[]
 
   createdAt    DateTime  @default(now()) @map("created_at")
   updatedAt    DateTime  @updatedAt @map("updated_at")
@@ -70,6 +73,7 @@ model Workspace {
   members   WorkspaceMember[]
   projects  Project[]
   tasks     Task[]
+  labels    Label[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -152,7 +156,11 @@ model Task {
   project       Project        @relation(fields: [workspaceId, projectId], references: [workspaceId, id], onDelete: Cascade)
   creator       User           @relation(fields: [creatorId], references: [id], onDelete: Restrict)
   assigneeMember WorkspaceMember? @relation(fields: [workspaceId, assigneeMemberId], references: [workspaceId, id], onDelete: Restrict)
+  comments      TaskComment[]
+  labels        TaskLabel[]
+  activities    TaskActivity[]
 
+  @@unique([workspaceId, id])
   @@unique([projectId, sequence])
   @@index([workspaceId])
   @@index([workspaceId, projectId])
@@ -163,4 +171,94 @@ model Task {
   @@index([projectId, createdAt, id])
   @@index([workspaceId, createdAt, id])
   @@map("tasks")
+}
+
+enum TaskActivityType {
+  TASK_CREATED
+  TASK_UPDATED
+  TASK_STATUS_CHANGED
+  TASK_PRIORITY_CHANGED
+  TASK_ASSIGNEE_CHANGED
+  TASK_ARCHIVED
+  COMMENT_CREATED
+  COMMENT_UPDATED
+  COMMENT_DELETED
+  LABEL_ADDED
+  LABEL_REMOVED
+}
+
+model TaskComment {
+  id                String    @id @default(uuid())
+  workspaceId       String    @map("workspace_id")
+  taskId            String    @map("task_id")
+  authorId          String?   @map("author_id")
+  authorDisplayName String    @map("author_display_name")
+  content           String?
+  deletedAt         DateTime? @map("deleted_at")
+  deletedById       String?   @map("deleted_by_id")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
+
+  task      Task  @relation(fields: [workspaceId, taskId], references: [workspaceId, id], onDelete: Cascade)
+  author    User? @relation("TaskCommentAuthor", fields: [authorId], references: [id], onDelete: SetNull)
+  deletedBy User? @relation("TaskCommentDeletedBy", fields: [deletedById], references: [id], onDelete: SetNull)
+
+  @@unique([workspaceId, id])
+  @@index([workspaceId, taskId, createdAt, id])
+  @@index([workspaceId, authorId, createdAt, id])
+  @@map("task_comments")
+}
+
+model Label {
+  id          String   @id @default(uuid())
+  workspaceId String   @map("workspace_id")
+  name        String
+  nameKey     String   @map("name_key")
+  color       String
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  workspace Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  tasks     TaskLabel[]
+
+  @@unique([workspaceId, id])
+  @@unique([workspaceId, nameKey])
+  @@index([workspaceId, createdAt, id])
+  @@map("labels")
+}
+
+model TaskLabel {
+  workspaceId String @map("workspace_id")
+  taskId      String @map("task_id")
+  labelId     String @map("label_id")
+
+  task  Task  @relation(fields: [workspaceId, taskId], references: [workspaceId, id], onDelete: Cascade)
+  label Label @relation(fields: [workspaceId, labelId], references: [workspaceId, id], onDelete: Cascade)
+
+  @@id([workspaceId, taskId, labelId])
+  @@index([workspaceId, labelId, taskId])
+  @@index([workspaceId, taskId, labelId])
+  @@map("task_labels")
+}
+
+model TaskActivity {
+  id               String           @id @default(uuid())
+  workspaceId      String           @map("workspace_id")
+  taskId           String           @map("task_id")
+  actorId          String?          @map("actor_id")
+  actorDisplayName  String?         @map("actor_display_name")
+  type             TaskActivityType
+  eventVersion     Int              @default(1) @map("event_version")
+  payload          Json
+  correlationId    String?          @map("correlation_id")
+  requestId        String?          @map("request_id")
+  createdAt        DateTime         @default(now()) @map("created_at")
+
+  task  Task  @relation(fields: [workspaceId, taskId], references: [workspaceId, id], onDelete: Cascade)
+  actor User? @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@unique([workspaceId, id])
+  @@index([workspaceId, taskId, createdAt, id])
+  @@index([workspaceId, actorId, createdAt, id])
+  @@map("task_activities")
 }

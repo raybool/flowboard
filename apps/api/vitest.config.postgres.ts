@@ -8,6 +8,7 @@ export default defineConfig({
   test: {
     globals: true,
     root: './',
+    fileParallelism: false,
     include: ['test/**/*.postgres.spec.ts'],
     setupFiles: ['./test/postgres-required.setup.ts'],
   },

@@ -54,14 +54,22 @@ $ pnpm run start:prod
 # unit tests
 $ pnpm run test
 
-# mandatory PostgreSQL security integration tests
-$ TEST_DATABASE_URL=postgresql://.../flowboard_test pnpm run test:postgres
+# prepare the dedicated local PostgreSQL database and apply migrations
+$ pnpm run db:deploy
+
+# all PostgreSQL integration and HTTP E2E tests
+$ pnpm run test:postgres
+
+# HTTP PostgreSQL E2E tests only
+$ pnpm run test:postgres:http
 
 # e2e tests
 $ pnpm run test:e2e
 
-# PostgreSQL integration tests require a pre-migrated local *_test database;
-# the command fails when TEST_DATABASE_URL is absent
+# The scripts use TEST_DATABASE_URL from .env.test.local when present.
+# Otherwise they derive a separate *_test database from the local DATABASE_URL.
+# They refuse non-local URLs and the development database before connecting,
+# creating the database, or running Prisma migrations.
 
 # test coverage
 $ pnpm run test:cov

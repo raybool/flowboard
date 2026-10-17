@@ -19,6 +19,7 @@ import {
 import type { PrismaService } from '../src/database/prisma.service';
 import { runSerializableTransaction } from '../src/database/serializable-transaction';
 import { ProjectsService } from '../src/modules/projects/projects.service';
+import { ActivityWriterService } from '../src/modules/task-activity/task-activity.writer';
 import { TasksService } from '../src/modules/tasks/tasks.service';
 import { WorkspaceMembersService } from '../src/modules/workspaces/workspace-members.service';
 import { WorkspacesService } from '../src/modules/workspaces/workspaces.service';
@@ -141,7 +142,11 @@ describe('Projects and Tasks service PostgreSQL integration', () => {
       prismaService,
       workspaceMembersService,
     );
-    tasksService = new TasksService(prismaService, workspaceMembersService);
+    tasksService = new TasksService(
+      prismaService,
+      workspaceMembersService,
+      new ActivityWriterService(),
+    );
   });
 
   afterEach(async () => {

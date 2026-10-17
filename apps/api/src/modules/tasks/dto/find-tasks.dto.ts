@@ -1,6 +1,8 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { Transform, Type } from 'class-transformer';
 import {
+  ArrayMaxSize,
+  IsArray,
   IsBoolean,
   IsEnum,
   IsInt,
@@ -28,6 +30,21 @@ export class FindTasksDto {
   @IsOptional()
   @IsUUID()
   assigneeId?: string;
+
+  @ApiPropertyOptional({
+    description: 'Repeated label UUID query parameter; all labels must match',
+    format: 'uuid',
+    isArray: true,
+    maxItems: 20,
+  })
+  @IsOptional()
+  @Transform(({ value }) =>
+    value === undefined ? undefined : Array.isArray(value) ? value : [value],
+  )
+  @IsArray()
+  @ArrayMaxSize(20)
+  @IsUUID('all', { each: true })
+  labelIds?: string[];
 
   @ApiPropertyOptional({ default: false })
   @IsOptional()
